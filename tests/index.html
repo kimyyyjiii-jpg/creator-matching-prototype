@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>추천 로직 테스트</title>
+    <style>
+      body { font-family: -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif; margin: 24px; color: #1c1f24; background: #fff; }
+      h1 { font-size: 20px; }
+      #summary { font-size: 18px; font-weight: 700; margin: 12px 0 20px; }
+      #summary.pass { color: #0b7a4b; }
+      #summary.fail { color: #b42318; }
+      h2 { font-size: 15px; margin: 20px 0 6px; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { padding: 3px 0; font-size: 14px; }
+      .ok::before { content: "✓ "; color: #0b7a4b; font-weight: 700; }
+      .ng { color: #b42318; }
+      .ng::before { content: "✗ "; font-weight: 700; }
+      .msg { display: block; margin-left: 18px; font-size: 13px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>추천 로직 테스트 (PRD v0.7 기준)</h1>
+    <div id="summary">실행 중…</div>
+    <div id="report"></div>
+    <script type="module" src="tests.js"></script>
+  </body>
+</html>
