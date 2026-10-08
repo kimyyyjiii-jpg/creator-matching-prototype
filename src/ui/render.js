@@ -1,5 +1,5 @@
 // 결과 영역 렌더링: 결과 요약, 크리에이터 카드, 카드 상세, 빈 상태
-import { TIERS, PURPOSES, METRIC_LABELS, ALL_PLATFORMS, SORT_OPTIONS, RANGE_COPY, NANO, MACRO, costMetricFor } from '../logic/constants.js';
+import { TIERS, PURPOSES, METRIC_LABELS, ALL_PLATFORMS, SORT_OPTIONS, RANGE_COPY, NANO, MICRO, MACRO, costMetricFor } from '../logic/constants.js';
 import { contributions, sortItems, filterByTags, tagCounts, buildTags } from '../logic/recommend.js';
 import { topPercent } from '../logic/percentile.js';
 import { formatWon, formatMan, formatCount, formatNumber, formatPercent, escapeHtml } from './format.js';
@@ -256,6 +256,11 @@ function rangeRelaxationText(r, n, stats) {
   if (r.tier === MACRO) {
     const pr = stats.priceRange[MACRO];
     return `${RANGE_COPY[MACRO].lead} → ${base} <span class="muted">(평균 조회수 약 10배, 조회당 비용 최저 · 단, 단가 ${formatWon(pr.min)} 이상, 참여율은 낮은 편)</span>`;
+  }
+  // 마이크로: 넓힌 범위가 나노를 포함하면 나노에서 위로, 아니면 매크로에서 아래로 넓힌 것
+  if (r.tier === MICRO) {
+    const copy = r.apply.range[0] === NANO ? RANGE_COPY.microFromNano : RANGE_COPY.microFromMacro;
+    return `${copy.lead} → ${base}`;
   }
   return base;
 }

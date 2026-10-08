@@ -92,9 +92,12 @@ export const MAX_SIMILAR = 3;
 export const FEW_RESULTS_MAX = 3;
 
 // 3.7 완화안 3의 구간별 안내 문구. 단가 숫자만 로딩 시 계산하고 나머지는 PRD 문구 그대로 쓴다.
+// 마이크로는 어느 쪽에서 넓히는지에 따라 문구가 다르다 (나노에서 위로 / 매크로에서 아래로)
 export const RANGE_COPY = {
   [NANO]: { lead: '단가가 낮은 크리에이터를 원한다면' },
   [MACRO]: { lead: '더 많은 사람에게 보여주고 싶다면' },
+  microFromNano: { lead: '더 많은 사람에게 보여주고 싶다면' },
+  microFromMacro: { lead: '비용을 줄이면서 반응을 원한다면' },
 };
 
 export const SORT_OPTIONS = [
