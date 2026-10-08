@@ -14,7 +14,9 @@
   --verify-bg: #e8edff;
   --caution: #b42318;
   --caution-bg: #fdecea;
-  --diff-bg: #fff1b8;
+  --diff-bg: #ffe58f;
+  --diff-text: #5c3c00;
+  --diff-line: #f0c43c;
   --radius: 12px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
 }
@@ -91,12 +93,21 @@ button, input, select { font: inherit; color: inherit; }
 }
 .range input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-weak); }
 .range__labels { list-style: none; display: flex; justify-content: space-between; padding: 0; margin: 6px 0 0; }
-.range__labels li { display: flex; flex-direction: column; align-items: center; width: 33%; color: var(--muted); font-size: 12px; }
-.range__labels li:first-child { align-items: flex-start; }
-.range__labels li:last-child { align-items: flex-end; }
-.range__labels li strong { font-size: 14px; }
-.range__labels li.is-on { color: var(--text); }
-.range__labels li.is-on strong { color: var(--accent); }
+.range__labels li { display: flex; justify-content: center; width: 33%; }
+.range__labels li:first-child { justify-content: flex-start; }
+.range__labels li:last-child { justify-content: flex-end; }
+.range__stop {
+  display: flex; flex-direction: column; align-items: inherit; gap: 0; border: 0; background: none; padding: 2px 4px; margin: 0 -4px;
+  border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 12px; line-height: 1.35;
+}
+.range__labels li:first-child .range__stop { align-items: flex-start; }
+.range__labels li:nth-child(2) .range__stop { align-items: center; }
+.range__labels li:last-child .range__stop { align-items: flex-end; }
+.range__stop:hover { background: var(--bg); }
+.range__stop:focus-visible { outline: 2px solid var(--accent); }
+.range__stop strong { font-size: 14px; }
+.range__labels li.is-on .range__stop { color: var(--text); }
+.range__labels li.is-on .range__stop strong { color: var(--accent); }
 
 .segmented { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .segmented label { flex: 1; }
@@ -143,7 +154,8 @@ button, input, select { font: inherit; color: inherit; }
 .card--alt { border-style: dashed; }
 .card__head { display: flex; gap: 10px; align-items: center; }
 .rank {
-  flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--text); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 14px;
+  flex: none; min-width: 44px; height: 28px; padding: 0 10px; border-radius: 8px; background: var(--text); color: #fff;
+  display: grid; place-items: center; font-weight: 700; font-size: 14px; white-space: nowrap;
 }
 .card__title h3 { margin: 0; font-size: 16px; }
 .card__meta { margin: 0; color: var(--muted); font-size: 13px; }
@@ -156,7 +168,7 @@ button, input, select { font: inherit; color: inherit; }
 .badge--muted { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
 .over { display: inline-block; color: var(--caution); font-size: 12px; font-weight: 700; }
 
-.is-diff { background: var(--diff-bg); border-radius: 4px; padding: 0 4px; }
+.is-diff { background: var(--diff-bg); color: var(--diff-text); font-weight: 700; border-radius: 4px; padding: 0 4px; box-shadow: inset 0 0 0 1px var(--diff-line); }
 mark.is-diff { color: inherit; }
 
 .tags { list-style: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 0; margin: 0; }
@@ -190,6 +202,22 @@ mark.is-diff { color: inherit; }
 }
 .toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
 .toast:empty { display: none; }
+
+/* 매칭 점수 (카드 상세) */
+.score p { display: flex; align-items: baseline; gap: 2px; }
+.score__value { font-size: 22px; color: var(--accent); }
+
+/* F7 태그 필터 */
+.tag-filter { display: grid; gap: 6px; margin: 0 0 14px; }
+.tag-filter__label { font-size: 13px; font-weight: 700; }
+.chip--tag { font-size: 13px; padding: 3px 10px; }
+.chip__count { color: var(--muted); font-weight: 600; margin-left: 2px; }
+.chip--tag[aria-pressed="true"] .chip__count { color: #dfe6ff; }
+.link-btn { justify-self: start; border: 0; background: none; color: var(--accent); font-size: 13px; font-weight: 600; padding: 0; cursor: pointer; }
+
+/* 3.7.1 결과가 적을 때 */
+.more { margin: 0 0 14px; }
+.more h3 { font-size: 14px; margin: 0 0 8px; }
 
 /* ---------- 빈 상태 ---------- */
 .empty { display: grid; gap: 16px; }

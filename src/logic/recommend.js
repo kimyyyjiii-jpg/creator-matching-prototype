@@ -5,11 +5,12 @@ import {
   DEFAULT_PURPOSE,
   PURPOSES,
   MAX_TAGS,
+  FEW_RESULTS_MAX,
   BUDGET_ROOM_NUMERATOR,
   BUDGET_ROOM_DENOMINATOR,
   costMetricFor,
 } from './constants.js';
-import { analyzeEmpty } from './relax.js';
+import { analyzeEmpty, suggestMore } from './relax.js';
 
 // 2.1 예산 검증: 원 단위 정수, 쉼표 허용. 0 이하·공란·숫자 외 입력은 실패
 export function validateBudget(text) {
@@ -120,7 +121,26 @@ export function recommend(dataset, cond) {
     rank: i + 1,
     ...buildTags(x.creator, cond.purpose, roomIds),
   }));
-  return { status: 'ok', cond, items };
+  const more = items.length <= FEW_RESULTS_MAX ? suggestMore(dataset.creators, cond, items.length) : [];
+  return { status: 'ok', cond, items, more };
+}
+
+// F7 태그 필터: 고른 태그 중 하나라도 카드에 표시된 크리에이터만 남긴다 (OR).
+// 카드에 보이는 태그(최대 3개 + 주의 태그)만 기준으로 해서 화면과 어긋나지 않게 한다.
+export function displayedTags(item) {
+  return [...item.tags, ...item.cautions].map((t) => t.label);
+}
+
+export function filterByTags(items, selected) {
+  if (!selected || !selected.size) return items;
+  return items.filter((item) => displayedTags(item).some((label) => selected.has(label)));
+}
+
+// 현재 결과에 나온 태그와 각 태그가 붙은 인원 (태그 필터 칩용, 처음 나온 순서)
+export function tagCounts(items) {
+  const counts = new Map();
+  for (const item of items) for (const label of displayedTags(item)) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return counts;
 }
 
 // F5 재정렬. 동점이면 추천순. 추천 순위 숫자(rank)는 바꾸지 않는다.

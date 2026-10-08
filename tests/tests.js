@@ -14,9 +14,13 @@ import {
   buildTags,
   budgetRoomIds,
   sortItems,
+  filterByTags,
+  tagCounts,
+  displayedTags,
 } from '../src/logic/recommend.js';
 import { findSimilar } from '../src/logic/relax.js';
 import { formatWon } from '../src/ui/format.js';
+import { conditionsToQuery, queryToForm } from '../src/ui/urlState.js';
 
 const sections = [];
 let current = null;
@@ -229,7 +233,7 @@ test('재정렬: 단가 낮은 순(신규는 맨 뒤), 평점 없는 사람은 �
     }
     return `${PURPOSES[p].label}: 1위 변경 ${changed}/${combos.length}, 상위 3명 중 겹침 평균 ${(overlap / combos.length).toFixed(1)}명`;
   });
-  info('참고: 목적별 결과 차이 (PRD 표: 도달 6·참여 11·검증 8 / 16개)', lines.join('\n'));
+  info('참고: 목적별 결과 차이 (PRD 3.5 표: 도달 4·참여 12·검증 8 / 16개, 겹침 2.4·2.3·2.3명)', lines.join('\n'));
 }
 
 // ---------------------------------------------------------------
@@ -306,7 +310,7 @@ test('이력 없는 크리에이터는 "검증됨" 배지를 받지 않음', () 
   const both = reach.filter((c) => c.flags.fitEngagement).length;
   const none = C.filter((c) => !c.flags.fitReach && !c.flags.fitEngagement).length;
   info(
-    '참고: 목적 적합도 배지 인원 (PRD 표: 도달 62·참여 60·검증 54, 둘 다 11, 둘 다 아님 89)',
+    '참고: 목적 적합도 배지 인원 (PRD 3.6 표: 도달 60·참여 59·검증 61, 둘 다 11, 둘 다 아님 92)',
     `구현값: 도달 ${reach.length}·참여 ${eng.length}·검증 ${ver.length}, 둘 다 ${both}, 둘 다 아님 ${none}`,
   );
 }
@@ -420,6 +424,64 @@ test('금액은 반올림 없이 정확하게 표기', () => {
     99999999999: '999억 9,999만 9,999원',
   };
   for (const [won, text] of Object.entries(cases)) eq(formatWon(Number(won)), text, won);
+});
+
+// ---------------------------------------------------------------
+section('10. 결과가 1~3명일 때 "N명 더" 제안 (PRD 3.7.1)');
+test('예산 54만·뷰티·마이크로(1명) → "예산 70만 원이면 1명 더", "나노까지 넓히면 3명 더"', () => {
+  const r = recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }));
+  eq(r.items.length, 1);
+  eq(r.more.map((x) => [x.kind, x.budget ?? x.tier ?? null, x.added]), [['budget', 700000, 1], ['range', NANO, 3]]);
+});
+test('예산 80만·뷰티·마이크로·유튜브(1명) → 예산 +1명, 플랫폼 전체 +3명, 규모 확장 +1명 / 카테고리 해제는 없음', () => {
+  const r = recommend(ds, cond({ budget: 800000, categories: ['뷰티'], range: [MICRO, MICRO], platform: '유튜브' }));
+  eq(r.items.length, 1);
+  eq(r.more.map((x) => [x.kind, x.added]), [['budget', 1], ['platform', 3], ['range', 1]]);
+  assert(r.more.every((x) => x.kind !== 'category'));
+});
+test('플랫폼을 고르지 않았으면 플랫폼 제안 없음', () => {
+  assert(recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] })).more.every((x) => x.kind !== 'platform'));
+});
+test('결과가 4명 이상이면 제안 없음', () => {
+  eq(recommend(ds, cond({ budget: 1500000, categories: ['뷰티'], range: [MICRO, MICRO] })).more, []);
+});
+test('제안을 적용하면 안내한 인원만큼 늘어남', () => {
+  const base = recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }));
+  for (const m of base.more) eq(recommend(ds, { ...base.cond, ...m.apply }).items.length, base.items.length + m.added, m.kind);
+});
+
+// ---------------------------------------------------------------
+section('11. 태그 필터 (F7, OR)');
+const tf = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
+test('태그 칩 인원 = 그 태그가 카드에 표시된 크리에이터 수', () => {
+  for (const [label, n] of tagCounts(tf.items)) eq(tf.items.filter((x) => displayedTags(x).includes(label)).length, n, label);
+});
+test('여러 태그를 고르면 하나라도 있는 크리에이터 (OR)', () => {
+  const a = '예산 여유';
+  const b = '신규(평점 없음)';
+  const both = filterByTags(tf.items, new Set([a, b]));
+  const union = new Set([...filterByTags(tf.items, new Set([a])), ...filterByTags(tf.items, new Set([b]))].map((x) => x.creator.id));
+  eq(both.map((x) => x.creator.id).sort(), [...union].sort());
+  eq(both.length, 11, '예산 여유 7명 + 신규 4명');
+});
+test('필터 없음 = 전체, 필터 후에도 추천 순위 숫자 유지', () => {
+  eq(filterByTags(tf.items, new Set()).length, 21);
+  const f = filterByTags(tf.items, new Set(['신규(평점 없음)']));
+  eq(f.map((x) => x.rank), [8, 13, 15, 21]);
+});
+
+// ---------------------------------------------------------------
+section('12. 주소(URL)로 조건 저장·복원 (뒤로가기)');
+test('조건 → 주소 → 조건이 그대로 복원', () => {
+  const c0 = cond({ budget: 3000000, categories: ['식품', '뷰티'], range: [MICRO, MICRO], platform: '유튜브', purpose: 'reach' });
+  const f = queryToForm(conditionsToQuery(c0), S.categories);
+  eq(normalizeConditions({ ...f, budget: Number(f.budgetText) }), c0);
+});
+test('기본값은 주소에 넣지 않음, 잘못된 값은 기본값으로', () => {
+  eq(conditionsToQuery(cond({ budget: 1000 })), '?budget=1000');
+  const f = queryToForm('?budget=5&cat=없는카테고리&range=2-0&platform=틱톡&purpose=x', S.categories);
+  eq([f.categories, f.range, f.platform, f.purpose], [[], [0, 2], '전체', 'balanced']);
+  eq(queryToForm('', S.categories), null, '조건 없는 주소');
 });
 
 // ---------------------------------------------------------------

@@ -38,14 +38,22 @@ flowchart TD
 
     COUNT -- 예 --> SCORE[목적별 가중치로<br/>매칭 점수 계산<br/>다이어그램 2 참고]
     SCORE --> TAGS[근거 태그 생성<br/>성과 → 비용 → 검증 순<br/>최대 3개<br/>+ 주의 태그는 별도]
-    TAGS --> SORT[추천순 정렬<br/>점수 숫자는 노출하지 않음]
-    SORT --> LIST[후보 카드 리스트 표시]
+    TAGS --> SORT[추천순 정렬<br/>목록에는 N위만 표시]
+    SORT --> FEW{결과가<br/>1~3명인가?}
+    FEW -- 예 --> MORE[N명 더 제안<br/>예산 상향 · 플랫폼 해제<br/>· 규모 확장]
+    FEW -- 아니오 --> LIST
+    MORE --> LIST[후보 카드 리스트 표시<br/>조건을 주소에 저장]
+    MORE -. 제안 버튼 클릭 .-> APPLY
 
     LIST --> ACTION{사용자 행동}
     ACTION -- 정렬 기준 변경 --> RESORT[선택한 기준으로 재정렬<br/>즉시 반영<br/>추천 순위 숫자는 유지]
     RESORT --> LIST
-    ACTION -- 카드 선택 --> DETAIL[카드 상세 표시<br/>지표별 수준,<br/>추천 기여 지표,<br/>목적 적합도]
+    ACTION -- 카드 선택 --> DETAIL[카드 상세 표시<br/>매칭 점수,<br/>지표별 수준,<br/>이 순위를 받은 이유,<br/>목적 적합도]
     DETAIL --> LIST
+    ACTION -- 태그 선택 --> TAGF[태그 필터<br/>하나라도 있으면 표시]
+    TAGF --> LIST
+    ACTION -- 뒤로가기 --> BACK[주소의 이전 조건으로<br/>폼 복원 후 다시 추천]
+    BACK --> VALID
     ACTION -- 조건 수정<br/>캠페인 목적 포함 --> INPUT
 ```
 
@@ -83,7 +91,7 @@ flowchart TD
     N5 --> PRESET
     N6 --> PRESET
 
-    PRESET -- 종합 추천 --> W1[참여율 25, 조회율 25<br/>평점 20, 조회당 비용 20<br/>경험 10]
+    PRESET -- 종합 추천 --> W1[참여율 25, 조회율 20<br/>평균 조회수 10, 평점 20<br/>조회당 비용 15, 경험 10]
     PRESET -- 도달 중심 --> W2[평균 조회수 40<br/>조회율 20, 참여율 15<br/>평점 15, 경험 10]
     PRESET -- 참여 중심 --> W3[참여율 45<br/>참여당 비용 20, 평점 15<br/>조회율 10, 경험 10]
     PRESET -- 검증된 크리에이터 --> W4[평점 40, 경험 25<br/>참여율 15, 조회율 10<br/>조회당 비용 10]

@@ -1,15 +1,19 @@
-import { TIERS, PLATFORMS, PURPOSES, ALL_PLATFORMS, DEFAULT_PURPOSE, FULL_RANGE } from './logic/constants.js';
+import { TIERS, PLATFORMS, PURPOSES, ALL_PLATFORMS, DEFAULT_PURPOSE, FULL_RANGE, SORT_OPTIONS } from './logic/constants.js';
 import { validateBudget, normalizeConditions, recommend } from './logic/recommend.js';
 import { loadDataset } from './data/load.js';
 import { renderSummary, renderResultList, renderEmpty, rangeLabel } from './ui/render.js';
 import { formatWon, escapeHtml } from './ui/format.js';
+import { conditionsToQuery, queryToForm } from './ui/urlState.js';
 
 const state = {
   dataset: null,
   form: { budgetText: '', categories: [], range: [...FULL_RANGE], platform: ALL_PLATFORMS, purpose: DEFAULT_PURPOSE },
   result: null,
   sortKey: 'recommended',
+  tagFilter: new Set(),
 };
+
+const defaultForm = () => ({ budgetText: '', categories: [], range: [...FULL_RANGE], platform: ALL_PLATFORMS, purpose: DEFAULT_PURPOSE });
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -50,8 +54,34 @@ async function init() {
   buildStaticControls();
   syncForm();
   els.submit.disabled = false;
+  // 주소에 조건이 있으면(뒤로가기·공유 링크) 그 조건으로 바로 추천한다
+  if (!restoreFromUrl()) showPlaceholder();
+}
+
+function showPlaceholder() {
+  state.result = null;
   els.results.innerHTML = `<div class="placeholder">조건을 입력하고 <strong>추천받기</strong>를 눌러 주세요.<br /><span class="muted">크리에이터 ${state.dataset.creators.length}명 데이터 로드 완료</span></div>`;
 }
+
+// ---------- 브라우저 이동 (뒤로가기·앞으로가기) ----------
+
+function restoreFromUrl() {
+  const form = queryToForm(location.search, state.dataset.stats.categories);
+  if (!form) return false;
+  state.form = form;
+  syncForm();
+  runRecommendation({ push: false, toast: false });
+  return true;
+}
+
+window.addEventListener('popstate', () => {
+  if (!state.dataset) return;
+  if (!restoreFromUrl()) {
+    state.form = defaultForm();
+    syncForm();
+    showPlaceholder();
+  }
+});
 
 // ---------- 폼 ----------
 
@@ -82,7 +112,17 @@ function buildStaticControls() {
     syncForm();
   });
 
-  els.rangeLabels.innerHTML = TIERS.map((t) => `<li><strong>${t.label}</strong><span>${t.criteria}</span></li>`).join('');
+  // 구간 이름·기준을 누르면 그 구간만 선택 (범위는 핸들을 끌어서 고른다)
+  els.rangeLabels.innerHTML = TIERS.map(
+    (t, i) => `<li><button type="button" class="range__stop" data-tier="${i}" aria-label="${t.label}만 선택"><strong>${t.label}</strong><span>${t.criteria}</span></button></li>`,
+  ).join('');
+  els.rangeLabels.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tier]');
+    if (!btn) return;
+    const t = Number(btn.dataset.tier);
+    state.form.range = [t, t];
+    syncForm();
+  });
   const onRange = (which) => () => {
     let lo = Number(els.rangeMin.value);
     let hi = Number(els.rangeMax.value);
@@ -131,6 +171,8 @@ function buildStaticControls() {
     if (e.target.id === 'sort-select') {
       state.sortKey = e.target.value;
       renderResults();
+      const label = SORT_OPTIONS.find((o) => o.key === state.sortKey).label;
+      showToast(`${label.endsWith('순') ? label : `${label}순`}으로 정렬했어요`);
     }
   });
 }
@@ -165,7 +207,7 @@ function syncForm() {
 
 // ---------- 추천 ----------
 
-function runRecommendation() {
+function runRecommendation({ push = true, toast = true } = {}) {
   const v = validateBudget(state.form.budgetText);
   if (!v.ok) {
     els.budgetError.textContent = v.error;
@@ -177,8 +219,13 @@ function runRecommendation() {
   const cond = normalizeConditions({ ...state.form, budget: v.value });
   state.result = recommend(state.dataset, cond);
   state.sortKey = 'recommended';
+  state.tagFilter = new Set();
   renderResults();
-  showToast('결과를 업데이트했습니다');
+  if (push) {
+    const query = conditionsToQuery(cond);
+    if (query !== location.search) history.pushState(null, '', query);
+  }
+  if (toast) showToast('결과를 업데이트했습니다');
 }
 
 // 같은 조건으로 다시 실행해도 실행됐음을 알 수 있도록 짧게 띄운다 (TC-4-13)
@@ -193,14 +240,37 @@ function showToast(message) {
 function renderResults() {
   const { result, sortKey, dataset } = state;
   if (!result) return;
-  const body = result.status === 'ok' ? renderResultList(result, sortKey, dataset.stats) : renderEmpty(result, dataset.stats);
-  els.results.innerHTML = renderSummary(result, sortKey) + body;
+  const { tagFilter } = state;
+  const body = result.status === 'ok' ? renderResultList(result, sortKey, dataset.stats, tagFilter) : renderEmpty(result, dataset.stats);
+  els.results.innerHTML = renderSummary(result, sortKey, tagFilter, dataset.stats) + body;
 }
 
 function onResultsClick(e) {
-  const btn = e.target.closest('[data-relax]');
-  if (!btn || !state.result || state.result.status !== 'empty') return;
-  const relax = state.result.relaxations[Number(btn.dataset.relax)];
+  if (!state.result) return;
+
+  // F7 태그 필터 (OR). 결과는 다시 계산하지 않고 보이는 카드만 거른다
+  const tagBtn = e.target.closest('[data-tag-filter]');
+  if (tagBtn) {
+    const label = tagBtn.dataset.tagFilter;
+    state.tagFilter.has(label) ? state.tagFilter.delete(label) : state.tagFilter.add(label);
+    renderResults();
+    return;
+  }
+  if (e.target.closest('[data-tag-reset]')) {
+    state.tagFilter = new Set();
+    renderResults();
+    return;
+  }
+
+  // 완화안(0명) 또는 "N명 더" 제안(1~3명)
+  const relaxBtn = e.target.closest('[data-relax]');
+  const moreBtn = e.target.closest('[data-more]');
+  const relax =
+    relaxBtn && state.result.status === 'empty'
+      ? state.result.relaxations[Number(relaxBtn.dataset.relax)]
+      : moreBtn && state.result.status === 'ok'
+        ? state.result.more[Number(moreBtn.dataset.more)]
+        : null;
   if (!relax) return;
   // 완화안은 해당 조건을 폼에 반영한 뒤 다시 추천한다 (나머지 조건은 그대로)
   const a = relax.apply;

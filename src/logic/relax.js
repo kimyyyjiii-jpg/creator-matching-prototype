@@ -101,3 +101,34 @@ function changeGroup({ platformDiff, tierDiff }) {
   if (!platformDiff && tierDiff) return 1;
   return 2;
 }
+
+// 결과가 1~3명일 때 함께 보여주는 "N명 더" 제안 (PRD 3.7.1)
+// 예산 상향 → 플랫폼 해제 → 규모 확장 순. 카테고리는 바꾸지 않는다.
+export function suggestMore(creators, cond, currentCount) {
+  const suggestions = [];
+
+  // 예산: 예산 때문에 빠진 후보 중 가장 낮은 단가까지 올리면
+  const overBudget = filterCandidates(creators, cond, { ignoreBudget: true }).filter((c) => c.price > cond.budget);
+  if (overBudget.length) {
+    const budget = Math.min(...overBudget.map((c) => c.price));
+    const added = overBudget.filter((c) => c.price <= budget).length;
+    suggestions.push({ kind: 'budget', budget, added, apply: { budget } });
+  }
+
+  if (cond.platform !== ALL_PLATFORMS) {
+    const added = filterCandidates(creators, { ...cond, platform: ALL_PLATFORMS }).length - currentCount;
+    if (added > 0) suggestions.push({ kind: 'platform', added, apply: { platform: ALL_PLATFORMS } });
+  }
+
+  const [lo, hi] = cond.range;
+  const directions = [];
+  if (lo > NANO) directions.push(lo - 1);
+  if (hi < MACRO) directions.push(hi + 1);
+  for (const tier of directions) {
+    const range = [Math.min(lo, tier), Math.max(hi, tier)];
+    const added = filterCandidates(creators, { ...cond, range }).length - currentCount;
+    if (added > 0) suggestions.push({ kind: 'range', tier, added, apply: { range } });
+  }
+
+  return suggestions;
+}

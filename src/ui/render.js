@@ -1,6 +1,6 @@
 // 결과 영역 렌더링: 결과 요약, 크리에이터 카드, 카드 상세, 빈 상태
 import { TIERS, PURPOSES, METRIC_LABELS, ALL_PLATFORMS, SORT_OPTIONS, RANGE_COPY, NANO, MACRO, costMetricFor } from '../logic/constants.js';
-import { contributions, sortItems } from '../logic/recommend.js';
+import { contributions, sortItems, filterByTags, tagCounts, buildTags } from '../logic/recommend.js';
 import { topPercent } from '../logic/percentile.js';
 import { formatWon, formatMan, formatCount, formatNumber, formatPercent, escapeHtml } from './format.js';
 
@@ -29,9 +29,11 @@ function conditionChips(cond) {
   return chips.map((c) => `<span class="chip chip--static">${escapeHtml(c)}</span>`).join('');
 }
 
-export function renderSummary(result, sortKey) {
+export function renderSummary(result, sortKey, tagFilter = new Set(), stats) {
   const { cond } = result;
   const count = result.status === 'ok' ? result.items.length : 0;
+  const shown = result.status === 'ok' ? filterByTags(result.items, tagFilter).length : 0;
+  const shownText = tagFilter.size ? ` <span class="summary__purpose">· 태그로 ${shown}명 표시</span>` : '';
   const sortSelect =
     result.status === 'ok'
       ? `<label class="sort">
@@ -47,16 +49,54 @@ export function renderSummary(result, sortKey) {
   return `
     <div class="summary">
       <div class="summary__main">
-        <p class="summary__count"><strong>${count}명</strong> 추천 <span class="summary__purpose">· ${escapeHtml(PURPOSES[cond.purpose].label)} 기준</span></p>
+        <p class="summary__count"><strong>${count}명</strong> 추천 <span class="summary__purpose">· ${escapeHtml(PURPOSES[cond.purpose].label)} 기준</span>${shownText}</p>
         <div class="summary__chips">${conditionChips(cond)}</div>
       </div>
       ${sortSelect}
     </div>
-    ${categoryNotice}`;
+    ${categoryNotice}
+    ${result.status === 'ok' ? renderMore(result, stats) + renderTagFilter(result.items, tagFilter) : ''}`;
 }
 
-export function renderResultList(result, sortKey, stats) {
-  const items = sortItems(result.items, sortKey);
+// F7 태그 필터 칩 (여러 개 고르면 OR)
+function renderTagFilter(items, tagFilter) {
+  const counts = tagCounts(items);
+  if (!counts.size) return '';
+  const chips = [...counts]
+    .map(
+      ([label, n]) =>
+        `<button type="button" class="chip chip--tag" data-tag-filter="${escapeHtml(label)}" aria-pressed="${tagFilter.has(label)}">${escapeHtml(label)} <span class="chip__count">${n}</span></button>`,
+    )
+    .join('');
+  const reset = tagFilter.size ? '<button type="button" class="link-btn" data-tag-reset>필터 초기화</button>' : '';
+  return `
+    <div class="tag-filter" role="group" aria-label="태그로 거르기">
+      <span class="tag-filter__label">태그로 보기 <span class="muted">(여러 개 고르면 하나라도 있는 크리에이터)</span></span>
+      <div class="chips">${chips}</div>
+      ${reset}
+    </div>`;
+}
+
+// 3.7.1 결과가 1~3명일 때 "N명 더" 제안
+function renderMore(result, stats) {
+  if (!result.more || !result.more.length) return '';
+  return `
+    <section class="more">
+      <h3>결과가 적어요. 조건을 조금 넓히면 더 볼 수 있어요</h3>
+      <ul class="relax-list">
+        ${result.more
+          .map(
+            (r, i) => `<li><button type="button" class="relax-btn" data-more="${i}">
+              <span>${relaxationText(r, stats)}</span><span class="relax-btn__go">적용하고 다시 추천 →</span>
+            </button></li>`,
+          )
+          .join('')}
+      </ul>
+    </section>`;
+}
+
+export function renderResultList(result, sortKey, stats, tagFilter = new Set()) {
+  const items = sortItems(filterByTags(result.items, tagFilter), sortKey);
   return `<div class="cards">${items.map((item) => renderCard(item, { cond: result.cond, stats, mode: 'result' })).join('')}</div>`;
 }
 
@@ -77,12 +117,15 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
       : '',
   ].join('');
 
-  const rank = mode === 'result' ? `<span class="rank" title="추천순 기준 순위">${item.rank}</span>` : '';
+  const rank = mode === 'result' ? `<span class="rank" title="추천순 기준 순위">${item.rank}위</span>` : '';
+  // 대안·유사 크리에이터 카드는 근거 태그 없이 주의 태그(신규)만 붙인다
+  const tagList = mode === 'result' ? item.tags : [];
+  const cautions = mode === 'result' ? item.cautions : buildTags(c, cond.purpose).cautions;
   const tags =
-    mode === 'result'
+    tagList.length || cautions.length
       ? `<ul class="tags">
-          ${item.tags.map((t) => `<li class="tag tag--${t.type}">${escapeHtml(t.label)}</li>`).join('')}
-          ${item.cautions.map((t) => `<li class="tag tag--caution">${escapeHtml(t.label)}</li>`).join('')}
+          ${tagList.map((t) => `<li class="tag tag--${t.type}">${escapeHtml(t.label)}</li>`).join('')}
+          ${cautions.map((t) => `<li class="tag tag--caution">${escapeHtml(t.label)}</li>`).join('')}
         </ul>`
       : '';
   const rating = c.rating != null ? `${c.rating.toFixed(1)} <span class="muted">(${c.count}건)</span>` : `<span class="muted">평가 없음 (${c.count}건)</span>`;
@@ -110,7 +153,7 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
       ${tags}
       <details class="detail">
         <summary>추천 근거 보기</summary>
-        ${renderDetail(c, cond.purpose, stats)}
+        ${renderDetail(c, cond.purpose, stats, item.score)}
       </details>
     </article>`;
 }
@@ -119,7 +162,7 @@ function levelRow(label, value, level) {
   return `<li><span class="level__label">${label}</span><span class="level__value">${value}</span><span class="level__pct">${level}</span></li>`;
 }
 
-function renderDetail(c, purpose, stats) {
+function renderDetail(c, purpose, stats, score) {
   const contrib = contributions(c, purpose, stats.normMeans);
   const contribText = contrib.length
     ? `${contrib.map((x) => `<strong>${METRIC_LABELS[x.metric]}</strong>`).join(', ')}${subjectParticle(METRIC_LABELS[contrib.at(-1).metric])} 평균보다 좋아 순위를 끌어올렸어요`
@@ -165,6 +208,10 @@ function renderDetail(c, purpose, stats) {
 
   return `
     <div class="detail__body">
+      <section class="score">
+        <h4>매칭 점수 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
+        <p><strong class="score__value">${score.toFixed(1)}</strong><span class="muted"> / 100점</span></p>
+      </section>
       <section>
         <h4>이 순위를 받은 이유 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
         <p>${contribText}</p>
@@ -182,24 +229,26 @@ function renderDetail(c, purpose, stats) {
 
 // ---- 빈 상태 (PRD 3.7, 3.8) ----
 
+// 0명일 때는 "N명", 결과가 적을 때(3.7.1)는 "N명 더"
 function relaxationText(r, stats) {
+  const n = r.added != null ? `${r.added}명 더` : `${r.count}명`;
   switch (r.kind) {
     case 'budget':
-      return `예산을 <strong>${formatWon(r.budget)}</strong>으로 올리면 <strong>${r.count}명</strong>`;
+      return `예산을 <strong>${formatWon(r.budget)}</strong>으로 올리면 <strong>${n}</strong>`;
     case 'platform':
-      return `플랫폼을 <strong>전체</strong>로 넓히면 <strong>${r.count}명</strong>`;
+      return `플랫폼을 <strong>전체</strong>로 넓히면 <strong>${n}</strong>`;
     case 'category':
-      return `카테고리 조건을 <strong>해제</strong>하면 <strong>${r.count}명</strong>`;
+      return `카테고리 조건을 <strong>해제</strong>하면 <strong>${n}</strong>`;
     case 'range':
-      return rangeRelaxationText(r, stats);
+      return rangeRelaxationText(r, n, stats);
     default:
       return '';
   }
 }
 
-function rangeRelaxationText(r, stats) {
+function rangeRelaxationText(r, n, stats) {
   const label = TIERS[r.tier].label;
-  const base = `<strong>${label}</strong>까지 넓히면 <strong>${r.count}명</strong>`;
+  const base = `<strong>${label}</strong>까지 넓히면 <strong>${n}</strong>`;
   if (r.tier === NANO) {
     const pr = stats.priceRange[NANO];
     return `${RANGE_COPY[NANO].lead} → ${base} <span class="muted">(단가 ${formatMan(pr.min)}~${formatMan(pr.max)} 원대)</span>`;
@@ -238,7 +287,7 @@ export function renderEmpty(result, stats) {
 
   const altHtml = alternatives.length
     ? `<section class="empty__block">
-        <h3>예산만 초과하는 후보 <span class="muted">(예산에 가까운 순)</span></h3>
+        <h3>이런 크리에이터는 어떠세요? <span class="muted">(예산을 조금 넘는 후보, 예산에 가까운 순)</span></h3>
         <div class="cards">${alternatives.map((item) => renderCard(item, { cond, stats, mode: 'alternative' })).join('')}</div>
       </section>`
     : '';

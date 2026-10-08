@@ -29,7 +29,8 @@ export const PURPOSES = {
   balanced: {
     label: '종합 추천',
     description: '성과·집행 이력·비용을 고루 반영',
-    weights: { er: 25, vr: 25, rating: 20, cpv: 20, exp: 10 },
+    // v0.9: 실제 도달 규모를 반영하려고 평균 조회수 10 추가 (조회율 25→20, 조회당 비용 20→15)
+    weights: { er: 25, vr: 20, views: 10, rating: 20, cpv: 15, exp: 10 },
   },
   reach: {
     label: '도달 중심',
@@ -87,6 +88,8 @@ export const BUDGET_ROOM_DENOMINATOR = 10;
 // 3.7 / 3.8
 export const MAX_ALTERNATIVES = 3;
 export const MAX_SIMILAR = 3;
+// 3.7.1 결과가 이 인원 이하이면 "N명 더" 제안을 함께 보여준다
+export const FEW_RESULTS_MAX = 3;
 
 // 3.7 완화안 3의 구간별 안내 문구. 단가 숫자만 로딩 시 계산하고 나머지는 PRD 문구 그대로 쓴다.
 export const RANGE_COPY = {
