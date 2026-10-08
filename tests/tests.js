@@ -16,6 +16,7 @@ import {
   sortItems,
 } from '../src/logic/recommend.js';
 import { findSimilar } from '../src/logic/relax.js';
+import { formatWon } from '../src/ui/format.js';
 
 const sections = [];
 let current = null;
@@ -66,14 +67,15 @@ test('UTF-8 BOM을 제거하고 첫 컬럼을 creator_id로 읽음', () => {
 test('구간별 인원: 나노 44 / 마이크로 129 / 매크로 27 (PRD 2.2)', () => {
   eq([NANO, MICRO, MACRO].map((t) => C.filter((c) => c.tier === t).length), [44, 129, 27]);
 });
-test('이력 없는 크리에이터 27명: 평점 공란·단가 0원, 추정 단가 적용', () => {
+test('신규(이력 없음) 27명: 평점 공란·단가 0원 → 단가 협의 필요, 판정 단가 = 같은 규모 최저 단가', () => {
   const none = C.filter((c) => !c.hasHistory);
   eq(none.length, 27);
-  assert(none.every((c) => c.rating == null && c.rawPrice === 0 && c.isEstimated), '평점 공란·단가 0원·추정 표시');
-  assert(none.every((c) => c.price === S.estimatedPrice[c.tier]), '추정 단가 = 구간 중앙값');
+  assert(none.every((c) => c.rating == null && c.rawPrice === 0 && c.isNegotiable), '평점 공란·단가 0원·협의 필요');
+  assert(none.every((c) => c.price === S.priceRange[c.tier].min && c.priceRange === S.priceRange[c.tier]), '판정 단가·표시 범위');
+  assert(C.filter((c) => c.hasHistory).every((c) => !c.isNegotiable && c.price === c.rawPrice), '이력 있으면 실제 단가');
 });
-test('추정 단가: 36.5만 / 132만 / 472.5만 원 (0원 제외 중앙값)', () => {
-  eq([S.estimatedPrice[NANO], S.estimatedPrice[MICRO], S.estimatedPrice[MACRO]], [365000, 1320000, 4725000]);
+test('같은 규모 단가 범위 (0원 제외): 나노 21만~50만 / 마이크로 51만~200만 / 매크로 224만~679만', () => {
+  eq([NANO, MICRO, MACRO].map((t) => [S.priceRange[t].min, S.priceRange[t].max]), [[210000, 500000], [510000, 2000000], [2240000, 6790000]]);
 });
 test('보정 평점 전체 평균 ≈ 4.415', () => near(S.ratingMean, 4.415, 0.001));
 test('보정 평점 예시: 1건 4.9점 → 4.50, 30건 5.0점 → 4.92 (PRD 3.4)', () => {
@@ -145,12 +147,17 @@ test('시나리오 A: 예산 150만·뷰티·마이크로 → 10명 중 8명', (
   eq(r.items.length, 8, '예산 통과');
   assert(r.items.every((x) => x.creator.price <= 1500000 && x.creator.category === '뷰티' && x.creator.tier === MICRO));
 });
-test('예산 필터는 이력 없으면 추정 단가로 판정 (0원으로 통과하지 않음)', () => {
-  const base = { categories: [], range: [NANO, NANO] };
-  const est = C.filter((c) => c.tier === NANO && !c.hasHistory).map((c) => c.id);
+test('신규는 같은 규모 최저 단가로 예산 판정 (0원으로 통과하지 않음)', () => {
+  const base = { categories: [], range: [MICRO, MICRO] };
+  const fresh = C.filter((c) => c.tier === MICRO && !c.hasHistory).map((c) => c.id);
   const pass = (b) => filterCandidates(C, cond({ ...base, budget: b })).map((c) => c.id);
-  assert(est.every((id) => pass(365000).includes(id)), '36.5만 원에서 통과');
-  assert(est.every((id) => !pass(364999).includes(id)), '36.5만 원 미만에서 제외');
+  eq(fresh.length, 14, '마이크로 신규');
+  assert(fresh.every((id) => pass(510000).includes(id)), '51만 원에서 통과');
+  assert(fresh.every((id) => !pass(509999).includes(id)), '51만 원 미만에서 제외');
+});
+test('TC-4-07: 예산 100만·식품·유튜브에서 신규 하은TALK81이 결과에 나옴', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'], platform: '유튜브' }));
+  assert(r.items.some((x) => x.creator.name === '하은TALK81'));
 });
 test('플랫폼 필터', () => {
   const r = filterCandidates(C, cond({ budget: 1e9, platform: '인스타그램' }));
@@ -184,11 +191,13 @@ test('목적을 바꾸면 순서가 달라짐 (시나리오 A: 종합 → 도달
   const b = recommend(ds, cond({ budget: 1500000, categories: ['뷰티'], range: [MICRO, MICRO], purpose: 'reach' })).items.map((x) => x.creator.id);
   assert(JSON.stringify(a) !== JSON.stringify(b));
 });
-test('재정렬: 단가 낮은 순(추정 단가 포함), 평점 없는 사람은 평점순 맨 뒤, 추천 순위 숫자 유지', () => {
+test('재정렬: 단가 낮은 순(신규는 맨 뒤), 평점 없는 사람은 평점순 맨 뒤, 추천 순위 숫자 유지', () => {
   const r = recommend(ds, cond({ budget: 1e9, range: [NANO, NANO] }));
   const byPrice = sortItems(r.items, 'price');
-  for (let i = 1; i < byPrice.length; i++) assert(byPrice[i - 1].creator.price <= byPrice[i].creator.price, '단가 오름차순');
-  assert(byPrice[0].creator.price > 0, '0원이 맨 위에 오지 않음');
+  const known = byPrice.filter((x) => !x.creator.isNegotiable);
+  for (let i = 1; i < known.length; i++) assert(known[i - 1].creator.price <= known[i].creator.price, '단가 오름차순');
+  const firstNew = byPrice.findIndex((x) => x.creator.isNegotiable);
+  assert(firstNew > 0 && byPrice.slice(firstNew).every((x) => x.creator.isNegotiable), '신규는 맨 뒤');
   const byRating = sortItems(r.items, 'rating');
   const firstNull = byRating.findIndex((x) => x.creator.rating == null);
   assert(firstNull > 0 && byRating.slice(firstNull).every((x) => x.creator.rating == null), '평점 없음 맨 뒤');
@@ -258,7 +267,7 @@ test('조건 일치 태그("카테고리 일치", "예산 적합")는 붙지 않
   const r = recommend(ds, cond({ budget: 1e9 }));
   assert(r.items.every((x) => x.tags.every((t) => !['카테고리 일치', '예산 적합'].includes(t.label))));
 });
-test('예산 여유: 결과 8명 → 3명, 10명 → 3명, 1명 → 없음, 추정 단가 제외', () => {
+test('예산 여유: 결과 8명 → 3명, 10명 → 3명, 1명 → 없음, 신규 제외', () => {
   const hist = C.filter((c) => c.hasHistory);
   eq(budgetRoomIds(hist.slice(0, 8)).size, 3, '8명');
   eq(budgetRoomIds(hist.slice(0, 10)).size, 3, '10명');
@@ -266,7 +275,7 @@ test('예산 여유: 결과 8명 → 3명, 10명 → 3명, 1명 → 없음, 추�
   const mixed = [...C.filter((c) => !c.hasHistory).slice(0, 5), ...hist.slice(0, 5)];
   const ids = budgetRoomIds(mixed);
   eq(ids.size, 3, '10명 중 3명');
-  assert([...ids].every((id) => C.find((c) => c.id === id).hasHistory), '추정 단가 제외');
+  assert([...ids].every((id) => C.find((c) => c.id === id).hasHistory), '신규 제외');
 });
 test('예산 여유는 결과 안에서 가장 저렴한 순', () => {
   const r = recommend(ds, cond({ budget: 1500000, categories: ['뷰티'], range: [MICRO, MICRO] }));
@@ -317,8 +326,9 @@ test('완화 3: 나노까지 넓히면 2명 (마이크로만 선택 → 두 방�
   const r = scenarioB.relaxations.filter((x) => x.kind === 'range');
   eq(r.map((x) => [x.tier, x.count]), [[NANO, 2]]);
 });
-test('매크로 쪽은 버튼 없이 "매크로는 예산 301만 원부터" 안내, 완화안 개수에 세지 않음', () => {
-  eq(scenarioB.rangeInfos, [{ tier: MACRO, minPrice: 3010000 }]);
+test('매크로 쪽은 버튼 없이 "매크로는 예산 224만 원부터" 안내, 완화안 개수에 세지 않음', () => {
+  // 뷰티 매크로 신규 1명을 매크로 최저 단가(224만 원)로 판정하므로 301만 원이 아니라 224만 원
+  eq(scenarioB.rangeInfos, [{ tier: MACRO, minPrice: 2240000 }]);
   assert(!scenarioB.relaxations.some((x) => x.kind === 'range' && x.tier === MACRO));
 });
 test('플랫폼 미선택이라 완화 2 없음, 카테고리 해제는 0명이라 완화 4 없음', () => {
@@ -392,6 +402,24 @@ test('완료 기준: 어떤 조건에서도 0명이면 완화안·대안·유사
           }
         }
   assert(empties > 100, `0명 케이스가 충분히 검사되지 않음 (${empties})`);
+});
+
+// ---------------------------------------------------------------
+section('9. 화면 표기 (TC-1-11)');
+test('금액은 반올림 없이 정확하게 표기', () => {
+  const cases = {
+    9000: '9,000원',
+    10000: '1만 원',
+    365000: '36.5만 원',
+    1500000: '150만 원',
+    4725000: '472.5만 원',
+    999999: '99만 9,999원',
+    1234567: '123만 4,567원',
+    100000000: '1억 원',
+    150000000: '1억 5,000만 원',
+    99999999999: '999억 9,999만 9,999원',
+  };
+  for (const [won, text] of Object.entries(cases)) eq(formatWon(Number(won)), text, won);
 });
 
 // ---------------------------------------------------------------

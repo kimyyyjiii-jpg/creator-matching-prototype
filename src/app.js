@@ -27,6 +27,7 @@ const els = {
   purposes: $('purpose-options'),
   submit: $('submit-btn'),
   results: $('results'),
+  toast: $('toast'),
 };
 
 // ---------- 데이터 로딩 ----------
@@ -59,11 +60,19 @@ function buildStaticControls() {
   if (controlsBuilt) return;
   controlsBuilt = true;
 
+  // "전체" 칩: 카테고리를 하나도 고르지 않은 상태(= 전체)를 표시한다.
+  // 다른 칩을 고르면 꺼지고, 누르면 선택한 카테고리를 모두 해제한다.
   const categories = [...state.dataset.stats.categories].sort((a, b) => a.localeCompare(b, 'ko'));
-  els.chips.innerHTML = categories
-    .map((c) => `<button type="button" class="chip" data-category="${escapeHtml(c)}" aria-pressed="false">${escapeHtml(c)}</button>`)
-    .join('');
+  els.chips.innerHTML = [
+    `<button type="button" class="chip" data-category-all aria-pressed="true">전체</button>`,
+    ...categories.map((c) => `<button type="button" class="chip" data-category="${escapeHtml(c)}" aria-pressed="false">${escapeHtml(c)}</button>`),
+  ].join('');
   els.chips.addEventListener('click', (e) => {
+    if (e.target.closest('[data-category-all]')) {
+      state.form.categories = [];
+      syncForm();
+      return;
+    }
     const btn = e.target.closest('[data-category]');
     if (!btn) return;
     const cat = btn.dataset.category;
@@ -140,6 +149,7 @@ function syncForm() {
   els.chips.querySelectorAll('[data-category]').forEach((btn) => {
     btn.setAttribute('aria-pressed', String(f.categories.includes(btn.dataset.category)));
   });
+  els.chips.querySelector('[data-category-all]')?.setAttribute('aria-pressed', String(f.categories.length === 0));
 
   const [lo, hi] = f.range;
   els.rangeMin.value = lo;
@@ -168,6 +178,16 @@ function runRecommendation() {
   state.result = recommend(state.dataset, cond);
   state.sortKey = 'recommended';
   renderResults();
+  showToast('결과를 업데이트했습니다');
+}
+
+// 같은 조건으로 다시 실행해도 실행됐음을 알 수 있도록 짧게 띄운다 (TC-4-13)
+let toastTimer = null;
+function showToast(message) {
+  els.toast.textContent = message;
+  els.toast.classList.add('is-visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => els.toast.classList.remove('is-visible'), 2000);
 }
 
 function renderResults() {

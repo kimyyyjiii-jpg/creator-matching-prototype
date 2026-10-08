@@ -22,7 +22,7 @@ dummy_creators.csv          원본 데이터 (수정하지 않음)
 src/
   app.js                    폼 상태, 추천 실행, 완화안 버튼 처리
   data/csv.js               CSV 파서 (BOM·따옴표 처리)
-  data/dataset.js           정제, 추정 단가, 보정 평점, 지표·백분위, 태그·배지 판정 (로딩 시 1회)
+  data/dataset.js           정제, 신규 단가 범위, 보정 평점, 지표·백분위, 태그·배지 판정 (로딩 시 1회)
   data/load.js              CSV 로드
   logic/constants.js        구간, 가중치, 태그 기준 등 PRD 상수
   logic/percentile.js       평균 순위 백분위

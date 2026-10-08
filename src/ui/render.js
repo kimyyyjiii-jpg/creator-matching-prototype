@@ -5,6 +5,15 @@ import { topPercent } from '../logic/percentile.js';
 import { formatWon, formatMan, formatCount, formatNumber, formatPercent, escapeHtml } from './format.js';
 
 const tierLabel = (t) => (t == null ? '-' : TIERS[t].label);
+// 상세 화면의 백분위 범위 표기. 폼의 "팔로워 규모"와 용어를 맞춘다
+const SAME_TIER = '같은 규모 내';
+
+// 마지막 글자의 받침 유무로 주격 조사(이/가)를 고른다
+function subjectParticle(word) {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  if (code < 0 || code > 11171) return '이(가)';
+  return code % 28 ? '이' : '가';
+}
 
 export function rangeLabel([lo, hi]) {
   return lo === hi ? TIERS[lo].label : `${TIERS[lo].label}~${TIERS[hi].label}`;
@@ -32,6 +41,9 @@ export function renderSummary(result, sortKey) {
           </select>
         </label>`
       : '';
+  const categoryNotice = cond.categories.length
+    ? ''
+    : '<p class="notice" role="note">카테고리를 선택하면 더 정확해요. 지금은 모든 카테고리에서 추천하고 있습니다.</p>';
   return `
     <div class="summary">
       <div class="summary__main">
@@ -39,7 +51,8 @@ export function renderSummary(result, sortKey) {
         <div class="summary__chips">${conditionChips(cond)}</div>
       </div>
       ${sortSelect}
-    </div>`;
+    </div>
+    ${categoryNotice}`;
 }
 
 export function renderResultList(result, sortKey, stats) {
@@ -52,9 +65,16 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
   const c = item.creator;
   const hl = (on) => (on ? ' is-diff' : '');
   const overBudget = c.price > cond.budget;
+  // 신규는 단가 대신 같은 규모의 단가 범위를 "예상"으로 보여준다
+  const priceText =
+    c.isNegotiable && c.priceRange
+      ? `예상 ${formatMan(c.priceRange.min)}~${formatWon(c.priceRange.max)}`
+      : formatWon(c.price);
   const priceNote = [
-    c.isEstimated ? '<span class="badge badge--muted">추정</span>' : '',
-    mode !== 'result' && overBudget ? `<span class="over">예산 초과 +${formatWon(c.price - cond.budget)}</span>` : '',
+    c.isNegotiable ? '<span class="badge badge--muted">협의 필요</span>' : '',
+    mode !== 'result' && overBudget
+      ? `<span class="over">예산 초과 +${formatWon(c.price - cond.budget)}${c.isNegotiable ? ' (최저 기준)' : ''}</span>`
+      : '',
   ].join('');
 
   const rank = mode === 'result' ? `<span class="rank" title="추천순 기준 순위">${item.rank}</span>` : '';
@@ -84,7 +104,7 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
         <div><dt>팔로워</dt><dd class="${hl(diff.tier)}">${formatCount(c.followers)}</dd></div>
         <div><dt>참여율</dt><dd>${formatPercent(c.er)}</dd></div>
         <div><dt>평균 조회수</dt><dd>${formatCount(c.views)}</dd></div>
-        <div><dt>평균 단가</dt><dd class="${hl(mode !== 'result' && overBudget)}">${formatWon(c.price)} ${priceNote}</dd></div>
+        <div><dt>평균 단가</dt><dd class="${hl(mode !== 'result' && overBudget)}">${priceText} ${priceNote}</dd></div>
         <div><dt>광고주 평점</dt><dd>${rating}</dd></div>
       </dl>
       ${tags}
@@ -102,13 +122,13 @@ function levelRow(label, value, level) {
 function renderDetail(c, purpose, stats) {
   const contrib = contributions(c, purpose, stats.normMeans);
   const contribText = contrib.length
-    ? contrib.map((x) => `<strong>${METRIC_LABELS[x.metric]}</strong>`).join(', ')
+    ? `${contrib.map((x) => `<strong>${METRIC_LABELS[x.metric]}</strong>`).join(', ')}${subjectParticle(METRIC_LABELS[contrib.at(-1).metric])} 평균보다 좋아 순위를 끌어올렸어요`
     : '<span class="muted">두드러진 지표 없음</span>';
 
   const costMetric = costMetricFor(purpose);
   const costPct = c.pct[costMetric];
   const costRaw = c.raw[costMetric];
-  const pctText = (p, scope = '구간 내') => (p == null ? '<span class="muted">-</span>' : `${scope} 상위 ${topPercent(p)}%`);
+  const pctText = (p, scope = SAME_TIER) => (p == null ? '<span class="muted">-</span>' : `${scope} 상위 ${topPercent(p)}%`);
 
   const levels = [
     levelRow('참여율', formatPercent(c.er), pctText(c.pct.er)),
@@ -122,7 +142,7 @@ function renderDetail(c, purpose, stats) {
       METRIC_LABELS[costMetric],
       costRaw == null ? '-' : `${formatNumber(costRaw)}원`,
       // 비용은 낮을수록 좋으므로 백분위가 낮을수록 상위
-      costPct == null ? '<span class="muted">추정 단가라 비교하지 않음</span>' : `구간 내 상위 ${topPercent(1 - costPct)}%`,
+      costPct == null ? '<span class="muted">단가 협의 필요라 비교하지 않음</span>' : `${SAME_TIER} 상위 ${topPercent(1 - costPct)}%`,
     ),
     levelRow(
       '캠페인 경험',
@@ -146,7 +166,7 @@ function renderDetail(c, purpose, stats) {
   return `
     <div class="detail__body">
       <section>
-        <h4>추천 기여 지표 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
+        <h4>이 순위를 받은 이유 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
         <p>${contribText}</p>
       </section>
       <section>

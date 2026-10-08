@@ -73,13 +73,13 @@ export function contributions(c, purpose, normMeans) {
     .slice(0, 2);
 }
 
-// 3.6 예산 여유: 현재 결과 안에서 단가 하위 30%(올림). 결과 1명이면 없음, 추정 단가는 제외
+// 3.6 예산 여유: 현재 결과 안에서 단가 하위 30%(올림). 결과 1명이면 없음, 단가 협의가 필요한 신규는 제외
 export function budgetRoomIds(creators) {
   if (creators.length <= 1) return new Set();
   const k = Math.ceil((creators.length * BUDGET_ROOM_NUMERATOR) / BUDGET_ROOM_DENOMINATOR);
   return new Set(
     creators
-      .filter((c) => !c.isEstimated)
+      .filter((c) => !c.isNegotiable)
       .sort((a, b) => a.price - b.price || a.id.localeCompare(b.id))
       .slice(0, k)
       .map((c) => c.id),
@@ -104,7 +104,7 @@ export function buildTags(c, purpose, roomIds = new Set()) {
 
   const cautions = [];
   if (!c.hasHistory) cautions.push({ type: 'caution', label: '신규(평점 없음)' });
-  if (c.isEstimated) cautions.push({ type: 'caution', label: '단가 추정' });
+  if (c.isNegotiable) cautions.push({ type: 'caution', label: '단가 협의 필요' });
 
   return { tags: [...perf, ...cost, ...verify].slice(0, MAX_TAGS), cautions };
 }
@@ -130,13 +130,16 @@ const SORTERS = {
   views: (a, b) => desc(a.creator.views, b.creator.views),
   rating: (a, b) => desc(a.creator.rating, b.creator.rating),
   count: (a, b) => desc(a.creator.count, b.creator.count),
-  price: (a, b) => asc(a.creator.price, b.creator.price),
+  // 단가를 모르는 신규는 맨 뒤
+  price: (a, b) => asc(knownPrice(a.creator), knownPrice(b.creator)),
 };
 
 export function sortItems(items, key = 'recommended') {
   const cmp = SORTERS[key] ?? SORTERS.recommended;
   return [...items].sort((a, b) => cmp(a, b) || a.rank - b.rank);
 }
+
+const knownPrice = (c) => (c.isNegotiable ? null : c.price);
 
 // 값이 없는 항목(예: 평점 없음)은 정렬 방향과 관계없이 맨 뒤
 function desc(x, y) {

@@ -66,13 +66,11 @@ export function buildDataset(rows) {
     c.hasHistory = c.count > 0 && c.rawPrice != null && c.rawPrice > 0;
   }
 
-  // 추정 단가: 같은 구간에서 이력이 있는 크리에이터의 단가 중앙값 (0원 제외)
-  const estimatedPrice = {};
+  // 같은 규모에서 이력이 있는 크리에이터의 단가 범위 (0원 제외)
   const priceRange = {};
   const medianViews = {};
   TIERS.forEach((_, t) => {
     const prices = base.filter((c) => c.tier === t && c.hasHistory).map((c) => c.rawPrice);
-    estimatedPrice[t] = median(prices);
     priceRange[t] = prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null;
     medianViews[t] = median(base.filter((c) => c.tier === t && c.views != null).map((c) => c.views));
   });
@@ -82,8 +80,11 @@ export function buildDataset(rows) {
   const ratingMean = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
 
   for (const c of base) {
-    c.isEstimated = !c.hasHistory;
-    c.price = c.hasHistory ? c.rawPrice : c.tier != null ? estimatedPrice[c.tier] : null;
+    // 신규(이력 없음)는 단가를 알 수 없다(협의 필요). 화면에는 같은 규모의 단가 범위를 보여주고,
+    // 예산 판정·완화안·대안 계산에는 그 범위의 최저 단가를 쓴다 (PRD 3.2, 3.3)
+    c.isNegotiable = !c.hasHistory;
+    c.priceRange = c.isNegotiable && c.tier != null ? priceRange[c.tier] : null;
+    c.price = c.hasHistory ? c.rawPrice : c.priceRange ? c.priceRange.min : null;
 
     c.adjRating =
       c.rating != null && ratingMean != null
@@ -92,7 +93,7 @@ export function buildDataset(rows) {
 
     c.raw = {
       vr: safeDivide(c.views, c.followers),
-      // 비용 지표는 이력이 있을 때만 계산 (추정 단가로는 비교하지 않음)
+      // 비용 지표는 이력이 있을 때만 계산 (단가를 모르는 신규는 비교하지 않음)
       cpv: c.hasHistory ? safeDivide(c.price, c.views) : null,
       cpe: c.hasHistory && c.er != null ? safeDivide(c.price, c.followers != null ? c.followers * (c.er / 100) : null) : null,
     };
@@ -173,6 +174,6 @@ export function buildDataset(rows) {
   return {
     creators: base,
     dropped,
-    stats: { ratingMean, estimatedPrice, priceRange, medianViews, normMeans, ratingTopCut, categories },
+    stats: { ratingMean, priceRange, medianViews, normMeans, ratingTopCut, categories },
   };
 }
