@@ -15,6 +15,7 @@ import {
   FIT_PCT,
   VERIFY_SCORE_WEIGHTS,
   METRIC_LABELS,
+  REC_PRICE_NEIGHBORS,
 } from '../logic/constants.js';
 import { groupPercentiles, median } from '../logic/percentile.js';
 
@@ -159,9 +160,11 @@ export function buildDataset(rows) {
     };
   }
 
-  // 추천 기여 지표 계산용: 200명 전체의 정규화 값 평균
+  assignRecommendedPrices(base);
+
+  // 추천 기여 지표 계산용: 200명 전체의 정규화 값 평균 (예산적합도는 후보마다 달라 제외)
   const normMeans = {};
-  for (const key of Object.keys(METRIC_LABELS)) {
+  for (const key of Object.keys(METRIC_LABELS).filter((k) => k !== 'budget')) {
     normMeans[key] = base.reduce((sum, c) => sum + c.norm[key], 0) / (base.length || 1);
   }
 
@@ -176,4 +179,38 @@ export function buildDataset(rows) {
     dropped,
     stats: { ratingMean, priceRange, medianViews, normMeans, ratingTopCut, categories },
   };
+}
+
+// 3.2 신규 추천 단가 (v1.0): 같은 플랫폼·같은 규모의 이력 있는 크리에이터 중
+// 팔로워(로그)·조회율·참여율이 가장 비슷한 2명의 단가 평균을 만 원 단위로 반올림한다.
+// 예산 판정에는 쓰지 않고(판정은 같은 규모 최저 단가), 화면의 참고 금액으로만 쓴다.
+function assignRecommendedPrices(creators) {
+  const features = (c) => [c.followers > 0 ? Math.log(c.followers) : null, c.raw.vr, c.er];
+  const usable = (c) => features(c).every((x) => x != null && Number.isFinite(x));
+  const history = creators.filter((c) => c.hasHistory && usable(c));
+
+  // 이력 있는 크리에이터 기준으로 각 지표를 표준화해 단위 차이를 없앤다
+  const scales = [0, 1, 2].map((i) => {
+    const xs = history.map((c) => features(c)[i]);
+    const mean = xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
+    const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (xs.length || 1)) || 1;
+    return { mean, sd };
+  });
+  const z = (c) => features(c).map((x, i) => (x - scales[i].mean) / scales[i].sd);
+
+  for (const c of creators) {
+    c.recPrice = null;
+    c.recRefs = [];
+    if (c.hasHistory || !usable(c)) continue;
+    const zc = z(c);
+    const nearest = history
+      .filter((h) => h.platform === c.platform && h.tier === c.tier)
+      .map((h) => ({ h, d: Math.hypot(...z(h).map((x, i) => x - zc[i])) }))
+      .sort((a, b) => a.d - b.d || a.h.id.localeCompare(b.h.id))
+      .slice(0, REC_PRICE_NEIGHBORS);
+    if (!nearest.length) continue;
+    const avg = nearest.reduce((sum, x) => sum + x.h.price, 0) / nearest.length;
+    c.recPrice = Math.round(avg / 1e4) * 1e4;
+    c.recRefs = nearest.map((x) => ({ id: x.h.id, name: x.h.name, price: x.h.price }));
+  }
 }

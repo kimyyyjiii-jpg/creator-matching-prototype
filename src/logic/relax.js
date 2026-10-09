@@ -1,111 +1,13 @@
-// PRD 3.7 후보 없음 처리 + 3.8 유사 크리에이터 추천 (flowchart 다이어그램 3)
-import { ALL_PLATFORMS, NANO, MACRO, MAX_ALTERNATIVES, MAX_SIMILAR } from './constants.js';
+// PRD 3.7 조건 넓히기 제안 + 3.8 가까운 후보 (flowchart 다이어그램 3)
+// v1.0: 0명일 때와 1~3명일 때 같은 규칙을 쓴다. 카테고리는 바꾸지 않는다.
+import { ALL_PLATFORMS, NANO, MACRO, MAX_NEARBY } from './constants.js';
 import { filterCandidates, inRange, scoreOf, byScore } from './recommend.js';
 
-export function analyzeEmpty(creators, cond) {
-  const relaxations = [];
-  const rangeInfos = [];
-  let alternatives = [];
-
-  // 완화 1. 예산 조건만 해제
-  const withoutBudget = filterCandidates(creators, cond, { ignoreBudget: true });
-  if (withoutBudget.length) {
-    const minPrice = Math.min(...withoutBudget.map((c) => c.price));
-    relaxations.push({
-      kind: 'budget',
-      count: withoutBudget.filter((c) => c.price <= minPrice).length,
-      budget: minPrice,
-      apply: { budget: minPrice },
-    });
-    // 대안: 예산만 초과하는 후보 최대 3명, 초과 금액이 작은 순
-    alternatives = withoutBudget
-      .map((creator) => ({ creator, score: scoreOf(creator, cond.purpose), over: creator.price - cond.budget }))
-      .sort((a, b) => a.over - b.over || byScore(a, b))
-      .slice(0, MAX_ALTERNATIVES);
-  }
-
-  // 완화 2. 플랫폼을 선택한 경우에만 전체로
-  if (cond.platform !== ALL_PLATFORMS) {
-    const count = filterCandidates(creators, { ...cond, platform: ALL_PLATFORMS }).length;
-    if (count) relaxations.push({ kind: 'platform', count, apply: { platform: ALL_PLATFORMS } });
-  }
-
-  // 완화 3. 넓힐 수 있는 방향마다 따로 계산 (아래쪽 → 위쪽 순)
-  const [lo, hi] = cond.range;
-  const directions = [];
-  if (lo > NANO) directions.push(lo - 1);
-  if (hi < MACRO) directions.push(hi + 1);
-  for (const tier of directions) {
-    const range = [Math.min(lo, tier), Math.max(hi, tier)];
-    const count = filterCandidates(creators, { ...cond, range }).length;
-    if (count) {
-      relaxations.push({ kind: 'range', tier, count, apply: { range } });
-      continue;
-    }
-    // 예산 때문에 0명인 방향: 버튼 없이 안내만. 완화안 개수에는 세지 않는다
-    const inTier = filterCandidates(creators, { ...cond, range: [tier, tier] }, { ignoreBudget: true });
-    if (inTier.length) rangeInfos.push({ tier, minPrice: Math.min(...inTier.map((c) => c.price)) });
-  }
-
-  // 완화 4. 카테고리를 선택한 경우에만 전체로
-  if (cond.categories.length) {
-    const count = filterCandidates(creators, { ...cond, categories: [] }).length;
-    if (count) relaxations.push({ kind: 'category', count, apply: { categories: [] } });
-  }
-
-  const hasBudgetRelaxation = relaxations.some((r) => r.kind === 'budget');
-  const similar = relaxations.length ? null : findSimilar(creators, cond);
-
-  return {
-    cause: hasBudgetRelaxation ? 'budget' : 'conditions',
-    relaxations,
-    rangeInfos,
-    alternatives: hasBudgetRelaxation ? alternatives : [],
-    similar,
-  };
-}
-
-// 3.8 카테고리 고정, 규모는 위·아래 한 단계까지, 플랫폼 변경 가능.
-// 원래 규모·플랫폼 조건에 그대로 맞는 크리에이터는 제외.
-export function findSimilar(creators, cond, limit = MAX_SIMILAR) {
-  const [lo, hi] = cond.range;
-  const wideRange = [Math.max(NANO, lo - 1), Math.min(MACRO, hi + 1)];
-
-  const pool = creators
-    .filter((c) => (cond.categories.length === 0 || cond.categories.includes(c.category)) && inRange(c.tier, wideRange))
-    .map((creator) => {
-      const platformDiff = cond.platform !== ALL_PLATFORMS && creator.platform !== cond.platform;
-      const tierDiff = !inRange(creator.tier, cond.range);
-      return { creator, platformDiff, tierDiff };
-    })
-    .filter((x) => x.platformDiff || x.tierDiff);
-
-  const withinBudget = pool.filter((x) => x.creator.price != null && x.creator.price <= cond.budget);
-  const overBudget = withinBudget.length === 0;
-  const items = (overBudget ? pool : withinBudget)
-    .map((x) => ({
-      ...x,
-      score: scoreOf(x.creator, cond.purpose),
-      over: Math.max(0, x.creator.price - cond.budget),
-      group: changeGroup(x),
-    }))
-    // 덜 바뀐 순서: 플랫폼만 다름 → 규모만 다름 → 둘 다 다름, 같은 그룹 안에서는 추천순
-    .sort((a, b) => a.group - b.group || byScore(a, b))
-    .slice(0, limit);
-
-  return { items, overBudget };
-}
-
-function changeGroup({ platformDiff, tierDiff }) {
-  if (platformDiff && !tierDiff) return 0;
-  if (!platformDiff && tierDiff) return 1;
-  return 2;
-}
-
-// 결과가 1~3명일 때 함께 보여주는 "N명 더" 제안 (PRD 3.7.1)
-// 예산 상향 → 플랫폼 해제 → 규모 확장 순. 카테고리는 바꾸지 않는다.
-export function suggestMore(creators, cond, currentCount) {
+// 예산 상향 → 플랫폼 해제 → 규모 확장(방향별) 순. 늘어나는 인원(added)이 1명 이상인 것만 버튼으로 제안하고,
+// 규모 방향이 예산 때문에 0명이면 누를 수 없는 안내 줄(infos)로 알려준다.
+export function suggestWider(creators, cond, currentCount) {
   const suggestions = [];
+  const infos = [];
 
   // 예산: 예산 때문에 빠진 후보 중 가장 낮은 단가까지 올리면
   const overBudget = filterCandidates(creators, cond, { ignoreBudget: true }).filter((c) => c.price > cond.budget);
@@ -127,8 +29,35 @@ export function suggestMore(creators, cond, currentCount) {
   for (const tier of directions) {
     const range = [Math.min(lo, tier), Math.max(hi, tier)];
     const added = filterCandidates(creators, { ...cond, range }).length - currentCount;
-    if (added > 0) suggestions.push({ kind: 'range', tier, added, apply: { range } });
+    if (added > 0) {
+      suggestions.push({ kind: 'range', tier, added, apply: { range } });
+      continue;
+    }
+    const inTier = filterCandidates(creators, { ...cond, range: [tier, tier] }, { ignoreBudget: true });
+    if (inTier.length) infos.push({ tier, minPrice: Math.min(...inTier.map((c) => c.price)) });
   }
 
-  return suggestions;
+  return { suggestions, infos };
+}
+
+// 0명일 때 보여주는 가까운 후보. 카테고리는 고정, 규모는 위·아래 한 단계까지, 플랫폼·예산은 바뀔 수 있다.
+// 덜 바뀐 순(바뀐 조건 수 → 예산 → 플랫폼 → 규모 순) → 예산에 가까운 순 → 추천순으로 최대 3명.
+export function findNearby(creators, cond, limit = MAX_NEARBY) {
+  const [lo, hi] = cond.range;
+  const wideRange = [Math.max(NANO, lo - 1), Math.min(MACRO, hi + 1)];
+
+  return creators
+    .filter((c) => (cond.categories.length === 0 || cond.categories.includes(c.category)) && inRange(c.tier, wideRange))
+    .map((creator) => {
+      const platformDiff = cond.platform !== ALL_PLATFORMS && creator.platform !== cond.platform;
+      const tierDiff = !inRange(creator.tier, cond.range);
+      const over = Math.max(0, creator.price - cond.budget);
+      const changes = (over > 0) + platformDiff + tierDiff;
+      // 바뀐 조건 수가 같으면 예산만 > 플랫폼만 > 규모만 (2개일 때도 같은 우선순위)
+      const kindRank = (platformDiff ? 1 : 0) + (tierDiff ? 2 : 0);
+      return { creator, platformDiff, tierDiff, over, changes, kindRank, score: scoreOf(creator, cond.purpose) };
+    })
+    .filter((x) => x.changes > 0)
+    .sort((a, b) => a.changes - b.changes || a.kindRank - b.kindRank || a.over - b.over || byScore(a, b))
+    .slice(0, limit);
 }

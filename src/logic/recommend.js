@@ -8,17 +8,19 @@ import {
   FEW_RESULTS_MAX,
   BUDGET_ROOM_NUMERATOR,
   BUDGET_ROOM_DENOMINATOR,
+  BUDGET_FIT,
+  NEUTRAL,
   costMetricFor,
 } from './constants.js';
-import { analyzeEmpty, suggestMore } from './relax.js';
+import { suggestWider, findNearby } from './relax.js';
 
 // 2.1 예산 검증: 원 단위 정수, 쉼표 허용. 0 이하·공란·숫자 외 입력은 실패
 export function validateBudget(text) {
   const s = String(text ?? '').replace(/[,\s]/g, '');
-  if (s === '') return { ok: false, error: '캠페인 예산을 입력해 주세요.' };
+  if (s === '') return { ok: false, error: '1인당 예산을 입력해 주세요.' };
   if (!/^\d+$/.test(s)) return { ok: false, error: '예산은 원 단위 숫자로만 입력해 주세요. (예: 1500000)' };
   const value = Number(s);
-  if (!Number.isSafeInteger(value) || value <= 0) return { ok: false, error: '예산은 0보다 큰 금액이어야 합니다.' };
+  if (!Number.isSafeInteger(value) || value <= 0) return { ok: false, error: '예산은 0보다 큰 금액이어야 해요.' };
   return { ok: true, value };
 }
 
@@ -49,11 +51,43 @@ export function filterCandidates(creators, cond, opts) {
   return creators.filter((c) => matches(c, cond, opts));
 }
 
-// 3.5 매칭 점수 (100점 만점). 정렬에만 쓰고 화면에는 노출하지 않는다.
-export function scoreOf(c, purpose) {
+// 3.4 예산적합도 (종합 추천에서만 사용, v1.0). 후보군에 따라 값이 달라지므로 추천할 때마다 계산한다.
+// 기준 금액 = 이력 있는 후보의 최고 단가, u = 단가 ÷ 기준 금액, 만점 하한 L은 0.7 (u ≥ 0.7인 이력 후보가 3명 미만이면 0.5)
+// 신규는 단가를 모르므로 0.5이고 기준 금액·인원 판정에서도 뺀다.
+export function budgetFitContext(candidates) {
+  const values = new Map();
+  const known = candidates.filter((c) => !c.isNegotiable && c.price != null);
+  if (!known.length) {
+    for (const c of candidates) values.set(c.id, NEUTRAL);
+    return { base: null, fullFrom: null, values, mean: NEUTRAL };
+  }
+  const base = Math.max(...known.map((c) => c.price));
+  const { fullFrom, widenedFullFrom, minFullCount, lowBand } = BUDGET_FIT;
+  const L = known.filter((c) => c.price / base >= fullFrom).length >= minFullCount ? fullFrom : widenedFullFrom;
+  for (const c of candidates) {
+    if (c.isNegotiable || c.price == null) {
+      values.set(c.id, NEUTRAL);
+      continue;
+    }
+    const u = c.price / base;
+    const v = u >= L ? 1 : u >= lowBand ? 0.6 + ((u - lowBand) / (L - lowBand)) * 0.4 : 0.2 + (u / lowBand) * 0.4;
+    values.set(c.id, v);
+  }
+  const mean = [...values.values()].reduce((a, b) => a + b, 0) / values.size;
+  return { base, fullFrom: L, values, mean };
+}
+
+// 정규화 값. 예산적합도는 현재 후보군 기준 값이고, 후보군 밖(가까운 후보 등)에서는 중립 0.5
+export function normOf(c, metric, fit) {
+  if (metric === 'budget') return fit?.values.get(c.id) ?? NEUTRAL;
+  return c.norm[metric];
+}
+
+// 3.5 매칭 점수 (100점 만점). 목록은 이 점수로 정렬하고, 숫자는 카드 상세에만 보여준다.
+export function scoreOf(c, purpose, fit) {
   const weights = PURPOSES[purpose].weights;
   let total = 0;
-  for (const [metric, w] of Object.entries(weights)) total += w * c.norm[metric];
+  for (const [metric, w] of Object.entries(weights)) total += w * normOf(c, metric, fit);
   return total;
 }
 
@@ -61,14 +95,18 @@ export function byScore(a, b) {
   return b.score - a.score || a.creator.id.localeCompare(b.creator.id);
 }
 
-export function rankByScore(creators, purpose) {
-  return creators.map((creator) => ({ creator, score: scoreOf(creator, purpose) })).sort(byScore);
+export function rankByScore(creators, purpose, fit) {
+  return creators.map((creator) => ({ creator, score: scoreOf(creator, purpose, fit) })).sort(byScore);
 }
 
-// 3.6 추천 기여 지표: 가중치 × (내 정규화 값 − 200명 평균). 양수인 것 중 큰 순서로 최대 2개
-export function contributions(c, purpose, normMeans) {
+// 3.6 추천 기여 지표: 가중치 × (내 정규화 값 − 평균). 양수인 것 중 큰 순서로 최대 2개
+// 평균은 200명 전체 기준이고, 예산적합도만 현재 후보군 평균과 비교한다.
+export function contributions(c, purpose, normMeans, fit) {
   return Object.entries(PURPOSES[purpose].weights)
-    .map(([metric, w]) => ({ metric, value: w * (c.norm[metric] - normMeans[metric]) }))
+    .map(([metric, w]) => {
+      const mean = metric === 'budget' ? (fit?.mean ?? NEUTRAL) : normMeans[metric];
+      return { metric, value: w * (normOf(c, metric, fit) - mean) };
+    })
     .filter((x) => x.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 2);
@@ -113,16 +151,25 @@ export function buildTags(c, purpose, roomIds = new Set()) {
 export function recommend(dataset, cond) {
   const matched = filterCandidates(dataset.creators, cond);
   if (!matched.length) {
-    return { status: 'empty', cond, ...analyzeEmpty(dataset.creators, cond) };
+    // 3.7 조건 넓히기 + 3.8 가까운 후보. 예산만 풀면 후보가 있으면 원인은 예산
+    const cause = filterCandidates(dataset.creators, cond, { ignoreBudget: true }).length ? 'budget' : 'conditions';
+    return {
+      status: 'empty',
+      cond,
+      cause,
+      wider: suggestWider(dataset.creators, cond, 0),
+      nearby: findNearby(dataset.creators, cond),
+    };
   }
+  const fit = budgetFitContext(matched);
   const roomIds = budgetRoomIds(matched);
-  const items = rankByScore(matched, cond.purpose).map((x, i) => ({
+  const items = rankByScore(matched, cond.purpose, fit).map((x, i) => ({
     ...x,
     rank: i + 1,
     ...buildTags(x.creator, cond.purpose, roomIds),
   }));
-  const more = items.length <= FEW_RESULTS_MAX ? suggestMore(dataset.creators, cond, items.length) : [];
-  return { status: 'ok', cond, items, more };
+  const wider = items.length <= FEW_RESULTS_MAX ? suggestWider(dataset.creators, cond, items.length) : null;
+  return { status: 'ok', cond, items, fit, wider };
 }
 
 // F7 태그 필터: 고른 태그 중 하나라도 카드에 표시된 크리에이터만 남긴다 (OR).

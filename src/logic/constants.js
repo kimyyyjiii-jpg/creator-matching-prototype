@@ -29,8 +29,8 @@ export const PURPOSES = {
   balanced: {
     label: '종합 추천',
     description: '성과·집행 이력·비용을 고루 반영',
-    // v0.9: 실제 도달 규모를 반영하려고 평균 조회수 10 추가 (조회율 25→20, 조회당 비용 20→15)
-    weights: { er: 25, vr: 20, views: 10, rating: 20, cpv: 15, exp: 10 },
+    // v0.9: 평균 조회수 10 추가. v1.0: 예산적합도 20 추가 (참여율 25→20, 조회율 20→15, 평점 20→15, 경험 10→5)
+    weights: { er: 20, vr: 15, views: 10, rating: 15, cpv: 15, exp: 5, budget: 20 },
   },
   reach: {
     label: '도달 중심',
@@ -58,6 +58,17 @@ export const METRIC_LABELS = {
   cpv: '조회당 비용',
   cpe: '참여당 비용',
   exp: '캠페인 경험',
+  // 예산적합도. 문장(이 순위를 받은 이유)에서는 "예산 활용도"로 쓴다
+  budget: '예산 활용도',
+};
+
+// 3.4 예산적합도 (종합 추천에서만 사용, v1.0)
+// 기준 금액 = 필터를 통과한 이력 있는 후보의 최고 단가, 소진율 u = 단가 ÷ 기준 금액
+export const BUDGET_FIT = {
+  fullFrom: 0.7, // 만점 하한 L
+  widenedFullFrom: 0.5, // u ≥ 0.7인 이력 있는 후보가 minFullCount명 미만이면 L을 넓힌다
+  minFullCount: 3,
+  lowBand: 0.4,
 };
 
 // 3.6 비용 태그·카드 상세의 비용 지표는 목적에 따라 하나만 쓴다
@@ -85,13 +96,15 @@ export const MAX_TAGS = 3;
 export const BUDGET_ROOM_NUMERATOR = 3;
 export const BUDGET_ROOM_DENOMINATOR = 10;
 
-// 3.7 / 3.8
-export const MAX_ALTERNATIVES = 3;
-export const MAX_SIMILAR = 3;
-// 3.7.1 결과가 이 인원 이하이면 "N명 더" 제안을 함께 보여준다
+// 3.7 결과가 0명이거나 이 인원 이하이면 "조건 넓히기" 제안을 보여준다
 export const FEW_RESULTS_MAX = 3;
+// 3.8 0명일 때 보여주는 가까운 후보 수
+export const MAX_NEARBY = 3;
 
-// 3.7 완화안 3의 구간별 안내 문구. 단가 숫자만 로딩 시 계산하고 나머지는 PRD 문구 그대로 쓴다.
+// 3.2 신규 추천 단가: 같은 플랫폼·같은 규모의 이력 있는 크리에이터 중 가장 비슷한 N명의 평균 (v1.0)
+export const REC_PRICE_NEIGHBORS = 2;
+
+// 3.7 규모 확장 안내 문구. 모든 방향에 넓힌 구간의 단가 범위를 같은 형식으로 붙인다 (v1.0)
 // 마이크로는 어느 쪽에서 넓히는지에 따라 문구가 다르다 (나노에서 위로 / 매크로에서 아래로)
 export const RANGE_COPY = {
   [NANO]: { lead: '단가가 낮은 크리에이터를 원한다면' },

@@ -44,7 +44,7 @@ async function init() {
   } catch (err) {
     els.results.innerHTML = `
       <div class="load-error" role="alert">
-        <p>크리에이터 데이터를 불러오지 못했습니다.</p>
+        <p>크리에이터 데이터를 불러오지 못했어요.</p>
         <p class="muted">${escapeHtml(err.message)}</p>
         <button type="button" id="retry-btn" class="secondary">다시 시도</button>
       </div>`;
@@ -225,7 +225,7 @@ function runRecommendation({ push = true, toast = true } = {}) {
     const query = conditionsToQuery(cond);
     if (query !== location.search) history.pushState(null, '', query);
   }
-  if (toast) showToast('결과를 업데이트했습니다');
+  if (toast) showToast('결과를 업데이트했어요');
 }
 
 // 같은 조건으로 다시 실행해도 실행됐음을 알 수 있도록 짧게 띄운다 (TC-4-13)
@@ -262,15 +262,9 @@ function onResultsClick(e) {
     return;
   }
 
-  // 완화안(0명) 또는 "N명 더" 제안(1~3명)
-  const relaxBtn = e.target.closest('[data-relax]');
-  const moreBtn = e.target.closest('[data-more]');
-  const relax =
-    relaxBtn && state.result.status === 'empty'
-      ? state.result.relaxations[Number(relaxBtn.dataset.relax)]
-      : moreBtn && state.result.status === 'ok'
-        ? state.result.more[Number(moreBtn.dataset.more)]
-        : null;
+  // 조건 넓히기 제안 (0명·1~3명 공통)
+  const widenBtn = e.target.closest('[data-widen]');
+  const relax = widenBtn ? state.result.wider?.suggestions[Number(widenBtn.dataset.widen)] : null;
   if (!relax) return;
   // 완화안은 해당 조건을 폼에 반영한 뒤 다시 추천한다 (나머지 조건은 그대로)
   const a = relax.apply;

@@ -1,5 +1,6 @@
-// 결과 영역 렌더링: 결과 요약, 크리에이터 카드, 카드 상세, 빈 상태
-import { TIERS, PURPOSES, METRIC_LABELS, ALL_PLATFORMS, SORT_OPTIONS, RANGE_COPY, NANO, MICRO, MACRO, costMetricFor } from '../logic/constants.js';
+// 결과 영역 렌더링: 결과 요약, 조건 넓히기, 크리에이터 카드, 카드 상세, 0명 화면
+// 문구는 모두 해요체로 쓴다 (PRD 4장, v1.0)
+import { TIERS, PURPOSES, METRIC_LABELS, ALL_PLATFORMS, SORT_OPTIONS, RANGE_COPY, NANO, MICRO, costMetricFor } from '../logic/constants.js';
 import { contributions, sortItems, filterByTags, tagCounts, buildTags } from '../logic/recommend.js';
 import { topPercent } from '../logic/percentile.js';
 import { formatWon, formatMan, formatCount, formatNumber, formatPercent, escapeHtml } from './format.js';
@@ -19,9 +20,14 @@ export function rangeLabel([lo, hi]) {
   return lo === hi ? TIERS[lo].label : `${TIERS[lo].label}~${TIERS[hi].label}`;
 }
 
+// 안내 박스: 정보(info)와 주의(warn) 두 가지만 쓴다
+function notice(text, tone = 'info') {
+  return `<p class="notice notice--${tone}" role="note">${text}</p>`;
+}
+
 function conditionChips(cond) {
   const chips = [
-    `예산 ${formatWon(cond.budget)}`,
+    `1인당 예산 ${formatWon(cond.budget)}`,
     cond.categories.length ? cond.categories.join(', ') : '카테고리 전체',
     `규모 ${rangeLabel(cond.range)}`,
     cond.platform === ALL_PLATFORMS ? '플랫폼 전체' : cond.platform,
@@ -31,21 +37,23 @@ function conditionChips(cond) {
 
 export function renderSummary(result, sortKey, tagFilter = new Set(), stats) {
   const { cond } = result;
-  const count = result.status === 'ok' ? result.items.length : 0;
-  const shown = result.status === 'ok' ? filterByTags(result.items, tagFilter).length : 0;
+  const ok = result.status === 'ok';
+  const count = ok ? result.items.length : 0;
+  const shown = ok ? filterByTags(result.items, tagFilter).length : 0;
   const shownText = tagFilter.size ? ` <span class="summary__purpose">· 태그로 ${shown}명 표시</span>` : '';
-  const sortSelect =
-    result.status === 'ok'
-      ? `<label class="sort">
-          <span>정렬</span>
-          <select id="sort-select">
-            ${SORT_OPTIONS.map((o) => `<option value="${o.key}" ${o.key === sortKey ? 'selected' : ''}>${o.label}</option>`).join('')}
-          </select>
-        </label>`
-      : '';
+  const sortSelect = ok
+    ? `<label class="sort">
+        <span>정렬</span>
+        <select id="sort-select">
+          ${SORT_OPTIONS.map((o) => `<option value="${o.key}" ${o.key === sortKey ? 'selected' : ''}>${o.label}</option>`).join('')}
+        </select>
+      </label>`
+    : '';
   const categoryNotice = cond.categories.length
     ? ''
-    : '<p class="notice" role="note">카테고리를 선택하면 더 정확해요. 지금은 모든 카테고리에서 추천하고 있습니다.</p>';
+    : notice('카테고리를 선택하면 더 정확해요. 지금은 모든 카테고리에서 추천하고 있어요.');
+  // 결과가 1~3명이면 0명일 때와 같은 "조건 넓히기" 영역을 결과 위에 보여준다
+  const wider = ok && result.wider ? renderWider(result.wider, stats, `조건에 맞는 크리에이터가 ${count}명이에요.`) : '';
   return `
     <div class="summary">
       <div class="summary__main">
@@ -55,7 +63,8 @@ export function renderSummary(result, sortKey, tagFilter = new Set(), stats) {
       ${sortSelect}
     </div>
     ${categoryNotice}
-    ${result.status === 'ok' ? renderMore(result, stats) + renderTagFilter(result.items, tagFilter) : ''}`;
+    ${wider}
+    ${ok ? renderTagFilter(result.items, tagFilter) : ''}`;
 }
 
 // F7 태그 필터 칩 (여러 개 고르면 OR)
@@ -77,48 +86,84 @@ function renderTagFilter(items, tagFilter) {
     </div>`;
 }
 
-// 3.7.1 결과가 1~3명일 때 "N명 더" 제안
-function renderMore(result, stats) {
-  if (!result.more || !result.more.length) return '';
+// ---- 조건 넓히기 (PRD 3.7): 0명·1~3명 공통 ----
+
+function renderWider(wider, stats, statusText) {
+  const { suggestions, infos } = wider;
+  const rows = [
+    ...suggestions.map(
+      (r, i) => `<li><button type="button" class="relax-btn" data-widen="${i}">
+        <span>${suggestionText(r, stats)}</span><span class="relax-btn__go">적용하고 다시 추천 →</span>
+      </button></li>`,
+    ),
+    // 예산 때문에 0명인 규모 방향: 누를 수 없는 안내 줄
+    ...infos.map(
+      (info) => `<li class="relax-info">ⓘ ${TIERS[info.tier].label}는 예산 <strong>${formatWon(info.minPrice)}</strong>부터 가능해요</li>`,
+    ),
+  ];
   return `
-    <section class="more">
-      <h3>결과가 적어요. 조건을 조금 넓히면 더 볼 수 있어요</h3>
-      <ul class="relax-list">
-        ${result.more
-          .map(
-            (r, i) => `<li><button type="button" class="relax-btn" data-more="${i}">
-              <span>${relaxationText(r, stats)}</span><span class="relax-btn__go">적용하고 다시 추천 →</span>
-            </button></li>`,
-          )
-          .join('')}
-      </ul>
+    <section class="widen">
+      ${notice(statusText, 'warn')}
+      ${rows.length ? `<h3>조건을 하나만 바꾸면 더 볼 수 있어요</h3><ul class="relax-list">${rows.join('')}</ul>` : ''}
     </section>`;
 }
 
-export function renderResultList(result, sortKey, stats, tagFilter = new Set()) {
-  const items = sortItems(filterByTags(result.items, tagFilter), sortKey);
-  return `<div class="cards">${items.map((item) => renderCard(item, { cond: result.cond, stats, mode: 'result' })).join('')}</div>`;
+function suggestionText(r, stats) {
+  const n = `${r.added}명 더`;
+  switch (r.kind) {
+    case 'budget':
+      return `예산을 <strong>${formatWon(r.budget)}</strong>으로 올리면 <strong>${n}</strong>`;
+    case 'platform':
+      return `플랫폼을 <strong>전체</strong>로 넓히면 <strong>${n}</strong>`;
+    case 'range':
+      return rangeSuggestionText(r, n, stats);
+    default:
+      return '';
+  }
 }
 
-// mode: 'result' | 'alternative' | 'similar'
-function renderCard(item, { cond, stats, mode, diff = {} }) {
+// 모든 방향에 "앞 문구 → OO까지 넓히면 N명 더 (단가 X~Y원대)" 같은 형식을 쓴다
+function rangeSuggestionText(r, n, stats) {
+  let copy = RANGE_COPY[r.tier];
+  // 마이크로: 넓힌 범위가 나노를 포함하면 나노에서 위로, 아니면 매크로에서 아래로 넓힌 것
+  if (r.tier === MICRO) copy = r.apply.range[0] === NANO ? RANGE_COPY.microFromNano : RANGE_COPY.microFromMacro;
+  const pr = stats.priceRange[r.tier];
+  const priceText = pr ? ` <span class="muted">(단가 ${formatMan(pr.min)}~${formatMan(pr.max)} 원대)</span>` : '';
+  return `${copy.lead} → <strong>${TIERS[r.tier].label}</strong>까지 넓히면 <strong>${n}</strong>${priceText}`;
+}
+
+// ---- 결과 목록 ----
+
+export function renderResultList(result, sortKey, stats, tagFilter = new Set()) {
+  const items = sortItems(filterByTags(result.items, tagFilter), sortKey);
+  const ctx = { cond: result.cond, stats, fit: result.fit, mode: 'result' };
+  return `<div class="cards">${items.map((item) => renderCard(item, ctx)).join('')}</div>`;
+}
+
+// mode: 'result' | 'nearby'
+function renderCard(item, { cond, stats, fit, mode, diff = {} }) {
   const c = item.creator;
   const hl = (on) => (on ? ' is-diff' : '');
   const overBudget = c.price > cond.budget;
-  // 신규는 단가 대신 같은 규모의 단가 범위를 "예상"으로 보여준다
-  const priceText =
-    c.isNegotiable && c.priceRange
-      ? `예상 ${formatMan(c.priceRange.min)}~${formatWon(c.priceRange.max)}`
-      : formatWon(c.price);
+
+  // 신규는 단가 대신 비슷한 크리에이터 기준 추천 단가를 보여준다 (예산 판정은 같은 규모 최저 단가)
+  const priceText = c.isNegotiable
+    ? c.recPrice != null
+      ? `추천 단가 약 ${formatWon(c.recPrice)}`
+      : `예상 ${formatMan(c.priceRange.min)}~${formatWon(c.priceRange.max)}`
+    : formatWon(c.price);
   const priceNote = [
     c.isNegotiable ? '<span class="badge badge--muted">협의 필요</span>' : '',
+    mode === 'result' && c.isNegotiable && c.recPrice > cond.budget
+      ? '<span class="over over--soft">추천 단가가 예산을 넘을 수 있어요</span>'
+      : '',
     mode !== 'result' && overBudget
       ? `<span class="over">예산 초과 +${formatWon(c.price - cond.budget)}${c.isNegotiable ? ' (최저 기준)' : ''}</span>`
       : '',
   ].join('');
 
   const rank = mode === 'result' ? `<span class="rank" title="추천순 기준 순위">${item.rank}위</span>` : '';
-  // 대안·유사 크리에이터 카드는 근거 태그 없이 주의 태그(신규)만 붙인다
+  // 가까운 후보 카드는 근거 태그 없이 주의 태그(신규)만 붙인다
   const tagList = mode === 'result' ? item.tags : [];
   const cautions = mode === 'result' ? item.cautions : buildTags(c, cond.purpose).cautions;
   const tags =
@@ -128,7 +173,7 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
           ${cautions.map((t) => `<li class="tag tag--caution">${escapeHtml(t.label)}</li>`).join('')}
         </ul>`
       : '';
-  const rating = c.rating != null ? `${c.rating.toFixed(1)} <span class="muted">(${c.count}건)</span>` : `<span class="muted">평가 없음 (${c.count}건)</span>`;
+  const rating = c.hasHistory && c.rating != null ? `${c.rating.toFixed(1)} <span class="muted">(${c.count}건)</span>` : '신규(0건)';
 
   return `
     <article class="card${mode !== 'result' ? ' card--alt' : ''}">
@@ -153,7 +198,7 @@ function renderCard(item, { cond, stats, mode, diff = {} }) {
       ${tags}
       <details class="detail">
         <summary>추천 근거 보기</summary>
-        ${renderDetail(c, cond.purpose, stats, item.score)}
+        ${renderDetail(c, { purpose: cond.purpose, budget: cond.budget, stats, fit, score: item.score })}
       </details>
     </article>`;
 }
@@ -162,8 +207,8 @@ function levelRow(label, value, level) {
   return `<li><span class="level__label">${label}</span><span class="level__value">${value}</span><span class="level__pct">${level}</span></li>`;
 }
 
-function renderDetail(c, purpose, stats, score) {
-  const contrib = contributions(c, purpose, stats.normMeans);
+function renderDetail(c, { purpose, budget, stats, fit, score }) {
+  const contrib = contributions(c, purpose, stats.normMeans, fit);
   const contribText = contrib.length
     ? `${contrib.map((x) => `<strong>${METRIC_LABELS[x.metric]}</strong>`).join(', ')}${subjectParticle(METRIC_LABELS[contrib.at(-1).metric])} 평균보다 좋아 순위를 끌어올렸어요`
     : '<span class="muted">두드러진 지표 없음</span>';
@@ -172,30 +217,31 @@ function renderDetail(c, purpose, stats, score) {
   const costPct = c.pct[costMetric];
   const costRaw = c.raw[costMetric];
   const pctText = (p, scope = SAME_TIER) => (p == null ? '<span class="muted">-</span>' : `${scope} 상위 ${topPercent(p)}%`);
+  const dash = '<span class="muted">-</span>';
 
   const levels = [
     levelRow('참여율', formatPercent(c.er), pctText(c.pct.er)),
     levelRow('조회율', c.raw.vr == null ? '-' : c.raw.vr.toFixed(2), pctText(c.pct.vr, '플랫폼 내')),
-    levelRow(
-      '광고주 평점',
-      c.hasHistory ? `보정 ${c.adjRating.toFixed(2)}` : '평가 없음',
-      c.hasHistory ? pctText(c.pct.ratingTier) : '<span class="muted">평가 이력 없음</span>',
-    ),
+    levelRow('광고주 평점', c.hasHistory ? `보정 ${c.adjRating.toFixed(2)}` : '신규(0건)', c.hasHistory ? pctText(c.pct.ratingTier) : dash),
     levelRow(
       METRIC_LABELS[costMetric],
       costRaw == null ? '-' : `${formatNumber(costRaw)}원`,
       // 비용은 낮을수록 좋으므로 백분위가 낮을수록 상위
       costPct == null ? '<span class="muted">단가 협의 필요라 비교하지 않음</span>' : `${SAME_TIER} 상위 ${topPercent(1 - costPct)}%`,
     ),
-    levelRow(
-      '캠페인 경험',
-      `${c.count}건`,
-      c.count > 0 ? pctText(c.pct.countTier) : '<span class="muted">집행 이력 없음</span>',
-    ),
+    levelRow('캠페인 경험', c.hasHistory ? `${c.count}건` : '0건 (신규)', c.hasHistory ? pctText(c.pct.countTier) : dash),
+    // 예산적합도: 종합 추천일 때만, 백분위가 아니라 1인당 예산 대비 사용 비율로 표기
+    'budget' in PURPOSES[purpose].weights
+      ? levelRow(
+          '예산적합도',
+          c.isNegotiable ? '-' : formatWon(c.price),
+          c.isNegotiable ? '<span class="muted">단가 협의 필요</span>' : `1인당 예산의 ${Math.round((c.price / budget) * 100)}% 사용`,
+        )
+      : '',
   ].join('');
 
   const badge = (on, label) => `<span class="fit${on ? ' fit--on' : ''}">${on ? '✓ ' : ''}${label}</span>`;
-  const fit = `
+  const fitList = `
     <ul class="fit-list">
       <li>${badge(c.flags.fitReach, '도달 캠페인 적합')}<span class="muted">평균 조회수 ${pctText(c.pct.views)}</span></li>
       <li>${badge(c.flags.fitEngagement, '참여 캠페인 적합')}<span class="muted">참여율 ${pctText(c.pct.er)}</span></li>
@@ -206,12 +252,23 @@ function renderDetail(c, purpose, stats, score) {
       }</li>
     </ul>`;
 
+  // 신규 추천 단가의 근거 (PRD 3.2)
+  const recPrice =
+    c.isNegotiable && c.recRefs.length
+      ? `<section>
+          <h4>추천 단가 <span class="muted">(참고용, 협의 필요)</span></h4>
+          <p>비슷한 크리에이터 ${c.recRefs.map((r) => `${escapeHtml(r.name)}(${formatWon(r.price)})`).join(', ')}의 평균이에요.
+          같은 규모 단가 범위는 ${formatMan(c.priceRange.min)}~${formatWon(c.priceRange.max)}이에요.</p>
+        </section>`
+      : '';
+
   return `
     <div class="detail__body">
       <section class="score">
         <h4>매칭 점수 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
         <p><strong class="score__value">${score.toFixed(1)}</strong><span class="muted"> / 100점</span></p>
       </section>
+      ${recPrice}
       <section>
         <h4>이 순위를 받은 이유 <span class="muted">(${escapeHtml(PURPOSES[purpose].label)} 기준)</span></h4>
         <p>${contribText}</p>
@@ -222,104 +279,32 @@ function renderDetail(c, purpose, stats, score) {
       </section>
       <section>
         <h4>목적 적합도 <span class="muted">(선택한 목적과 무관)</span></h4>
-        ${fit}
+        ${fitList}
       </section>
     </div>`;
 }
 
-// ---- 빈 상태 (PRD 3.7, 3.8) ----
-
-// 0명일 때는 "N명", 결과가 적을 때(3.7.1)는 "N명 더"
-function relaxationText(r, stats) {
-  const n = r.added != null ? `${r.added}명 더` : `${r.count}명`;
-  switch (r.kind) {
-    case 'budget':
-      return `예산을 <strong>${formatWon(r.budget)}</strong>으로 올리면 <strong>${n}</strong>`;
-    case 'platform':
-      return `플랫폼을 <strong>전체</strong>로 넓히면 <strong>${n}</strong>`;
-    case 'category':
-      return `카테고리 조건을 <strong>해제</strong>하면 <strong>${n}</strong>`;
-    case 'range':
-      return rangeRelaxationText(r, n, stats);
-    default:
-      return '';
-  }
-}
-
-function rangeRelaxationText(r, n, stats) {
-  const label = TIERS[r.tier].label;
-  const base = `<strong>${label}</strong>까지 넓히면 <strong>${n}</strong>`;
-  if (r.tier === NANO) {
-    const pr = stats.priceRange[NANO];
-    return `${RANGE_COPY[NANO].lead} → ${base} <span class="muted">(단가 ${formatMan(pr.min)}~${formatMan(pr.max)} 원대)</span>`;
-  }
-  if (r.tier === MACRO) {
-    const pr = stats.priceRange[MACRO];
-    return `${RANGE_COPY[MACRO].lead} → ${base} <span class="muted">(평균 조회수 약 10배, 조회당 비용 최저 · 단, 단가 ${formatWon(pr.min)} 이상, 참여율은 낮은 편)</span>`;
-  }
-  // 마이크로: 넓힌 범위가 나노를 포함하면 나노에서 위로, 아니면 매크로에서 아래로 넓힌 것
-  if (r.tier === MICRO) {
-    const copy = r.apply.range[0] === NANO ? RANGE_COPY.microFromNano : RANGE_COPY.microFromMacro;
-    return `${copy.lead} → ${base}`;
-  }
-  return base;
-}
+// ---- 0명 화면 (PRD 3.7, 3.8) ----
 
 export function renderEmpty(result, stats) {
-  const { cond, cause, relaxations, rangeInfos, alternatives, similar } = result;
-  const causeText = cause === 'budget' ? '이 예산으로 집행 가능한 후보가 없습니다.' : '선택한 조건에 맞는 크리에이터가 없습니다.';
+  const { cond, cause, wider, nearby } = result;
+  const statusText = cause === 'budget' ? '이 예산으로 집행할 수 있는 크리에이터가 없어요.' : '조건에 맞는 크리에이터가 없어요.';
 
-  const relaxHtml = relaxations.length
+  const nearbyHtml = nearby.length
     ? `<section class="empty__block">
-        <h3>조건을 하나만 바꿔 보세요</h3>
-        <ul class="relax-list">
-          ${relaxations
-            .map(
-              (r, i) => `<li><button type="button" class="relax-btn" data-relax="${i}">
-                <span>${relaxationText(r, stats)}</span><span class="relax-btn__go">적용하고 다시 추천 →</span>
-              </button></li>`,
-            )
-            .join('')}
-        </ul>
+        <h3>이런 크리에이터는 어떠세요?</h3>
+        <p class="muted">조건과 <mark class="is-diff">다른 값</mark>을 표시했어요. 덜 바뀐 순서로 보여드려요. 조건은 바뀌지 않아요.</p>
+        <div class="cards">${nearby
+          .map((item) =>
+            renderCard(item, { cond, stats, mode: 'nearby', diff: { platform: item.platformDiff, tier: item.tierDiff } }),
+          )
+          .join('')}</div>
       </section>`
-    : '';
-
-  const infoHtml = rangeInfos.length
-    ? `<ul class="info-list">${rangeInfos
-        .map((info) => `<li>ⓘ ${TIERS[info.tier].label}는 예산 <strong>${formatWon(info.minPrice)}</strong>부터 가능합니다</li>`)
-        .join('')}</ul>`
-    : '';
-
-  const altHtml = alternatives.length
-    ? `<section class="empty__block">
-        <h3>이런 크리에이터는 어떠세요? <span class="muted">(예산을 조금 넘는 후보, 예산에 가까운 순)</span></h3>
-        <div class="cards">${alternatives.map((item) => renderCard(item, { cond, stats, mode: 'alternative' })).join('')}</div>
-      </section>`
-    : '';
-
-  let similarHtml = '';
-  if (similar) {
-    similarHtml = similar.items.length
-      ? `<section class="empty__block">
-          <h3>이런 크리에이터는 어떠세요?</h3>
-          <p class="muted">${
-            similar.overBudget ? '예산 안에 드는 비슷한 크리에이터가 없어 예산을 넘는 후보를 보여드립니다. ' : ''
-          }원래 조건과 <mark class="is-diff">다른 값</mark>을 표시했어요. 조건은 바뀌지 않습니다.</p>
-          <div class="cards">${similar.items
-            .map((item) =>
-              renderCard(item, { cond, stats, mode: 'similar', diff: { platform: item.platformDiff, tier: item.tierDiff } }),
-            )
-            .join('')}</div>
-        </section>`
-      : `<p class="empty__guide">입력값을 다시 확인해 주세요.</p>`;
-  }
+    : notice('입력값을 다시 확인해 주세요.', 'warn');
 
   return `
     <div class="empty">
-      <p class="empty__cause">${causeText}</p>
-      ${relaxHtml}
-      ${infoHtml}
-      ${altHtml}
-      ${similarHtml}
+      ${renderWider(wider, stats, statusText)}
+      ${nearbyHtml}
     </div>`;
 }

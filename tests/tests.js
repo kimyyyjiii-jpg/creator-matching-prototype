@@ -1,4 +1,4 @@
-// 브라우저에서 실행하는 추천 로직 테스트. PRD.md v0.7의 수치와 시나리오를 검증한다.
+// 브라우저에서 실행하는 추천 로직 테스트. PRD.md v1.0의 수치와 시나리오를 검증한다.
 import { parseCSV } from '../src/data/csv.js';
 import { buildDataset } from '../src/data/dataset.js';
 import { loadDataset } from '../src/data/load.js';
@@ -17,9 +17,12 @@ import {
   filterByTags,
   tagCounts,
   displayedTags,
+  budgetFitContext,
+  normOf,
 } from '../src/logic/recommend.js';
-import { findSimilar } from '../src/logic/relax.js';
 import { formatWon } from '../src/ui/format.js';
+import { findNearby } from '../src/logic/relax.js';
+import { renderEmpty, renderResultList, renderSummary } from '../src/ui/render.js';
 import { conditionsToQuery, queryToForm } from '../src/ui/urlState.js';
 
 const sections = [];
@@ -175,6 +178,12 @@ test('여러 구간 범위 선택: 나노~마이크로 173명, 마이크로~매�
 
 // ---------------------------------------------------------------
 section('4. 점수와 정렬 (PRD 3.5, F2, F5)');
+test('목적별 가중치 = PRD 3.5 표 (v1.0: 종합 추천에 예산적합도 20)', () => {
+  eq(PURPOSES.balanced.weights, { er: 20, vr: 15, views: 10, rating: 15, cpv: 15, exp: 5, budget: 20 }, '종합 추천');
+  eq(PURPOSES.reach.weights, { views: 40, vr: 20, er: 15, rating: 15, exp: 10 }, '도달 중심');
+  eq(PURPOSES.engagement.weights, { er: 45, cpe: 20, rating: 15, vr: 10, exp: 10 }, '참여 중심');
+  eq(PURPOSES.verified.weights, { rating: 40, exp: 25, er: 15, vr: 10, cpv: 10 }, '검증된 크리에이터');
+});
 test('목적별 가중치 합계 = 100', () => {
   for (const [k, p] of Object.entries(PURPOSES)) eq(Object.values(p.weights).reduce((a, b) => a + b, 0), 100, k);
 });
@@ -220,8 +229,12 @@ test('재정렬: 단가 낮은 순(신규는 맨 뒤), 평점 없는 사람은 �
       const pool = C.filter((c) => c.tier === t && c.category === cat);
       if (pool.length >= 5) combos.push(pool);
     }
-  const top = (pool, p) => [...pool].sort((a, b) => scoreOf(b, p) - scoreOf(a, p) || a.id.localeCompare(b.id));
-  const lines = ['reach', 'engagement', 'verified'].map((p) => {
+  // 예산 제한 없이 조합 전체를 후보로 보고 예산적합도를 계산한다 (PRD 3.5)
+  const top = (pool, p) => {
+    const fit = budgetFitContext(pool);
+    return [...pool].sort((a, b) => scoreOf(b, p, fit) - scoreOf(a, p, fit) || a.id.localeCompare(b.id));
+  };
+  const effect = ['reach', 'engagement', 'verified'].map((p) => {
     let changed = 0;
     let overlap = 0;
     for (const pool of combos) {
@@ -231,10 +244,24 @@ test('재정렬: 단가 낮은 순(신규는 맨 뒤), 평점 없는 사람은 �
       const b3 = new Set(base.slice(0, 3).map((c) => c.id));
       overlap += other.slice(0, 3).filter((c) => b3.has(c.id)).length;
     }
-    return `${PURPOSES[p].label}: 1위 변경 ${changed}/${combos.length}, 상위 3명 중 겹침 평균 ${(overlap / combos.length).toFixed(1)}명`;
+    return [changed, (overlap / combos.length).toFixed(1)];
   });
-  info('참고: 목적별 결과 차이 (PRD 3.5 표: 도달 4·참여 12·검증 8 / 16개, 겹침 2.4·2.3·2.3명)', lines.join('\n'));
+  test('PRD 3.5 프리셋 효과 표: 16개 조합 중 1위 변경 도달 4·참여 12·검증 7, 상위 3명 겹침 2.5·2.1·2.1명', () => {
+    eq(combos.length, 16, '조합 수');
+    eq(effect, [[4, '2.5'], [12, '2.1'], [7, '2.1']]);
+  });
 }
+test('PRD 3.5 예시: 300만·식품·마이크로 1~3위 채원다이어리197(80.8) / 소라브이로그61(68.3) / 다은TV16(67.4)', () => {
+  const r = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
+  eq(r.items.slice(0, 3).map((x) => x.creator.name), ['채원다이어리197', '소라브이로그61', '다은TV16']);
+  eq(r.items.slice(0, 3).map((x) => x.score.toFixed(1)), ['80.8', '68.3', '67.4']);
+});
+test('도달·참여·검증 목적은 v1.0 변경 전과 같은 순위 (회귀)', () => {
+  const top3 = (p) => recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO], purpose: p })).items.slice(0, 3).map((x) => x.creator.name);
+  eq(top3('reach'), ['채원다이어리197', '수아채널107', '다은TV16']);
+  eq(top3('engagement'), ['소라브이로그61', '다은TV16', '채원스페이스164']);
+  eq(top3('verified'), ['다은TV16', '수진푸드로그24', '채원다이어리197']);
+});
 
 // ---------------------------------------------------------------
 section('5. 근거 태그 (PRD 3.6)');
@@ -309,77 +336,69 @@ test('이력 없는 크리에이터는 "검증됨" 배지를 받지 않음', () 
   const ver = C.filter((c) => c.flags.fitVerified);
   const both = reach.filter((c) => c.flags.fitEngagement).length;
   const none = C.filter((c) => !c.flags.fitReach && !c.flags.fitEngagement).length;
-  info(
-    '참고: 목적 적합도 배지 인원 (PRD 3.6 표: 도달 60·참여 59·검증 61, 둘 다 11, 둘 다 아님 92)',
-    `구현값: 도달 ${reach.length}·참여 ${eng.length}·검증 ${ver.length}, 둘 다 ${both}, 둘 다 아님 ${none}`,
-  );
+  test('PRD 3.6 목적 적합도 배지 인원: 도달 60·참여 59·검증 61, 둘 다 11, 둘 다 아님 92', () => {
+    eq([reach.length, eng.length, ver.length, both, none], [60, 59, 61, 11, 92]);
+  });
 }
 
 // ---------------------------------------------------------------
-section('7. 후보 없음 처리 (PRD 3.7, 시나리오 B)');
+section('7. 조건 넓히기 (PRD 3.7, 시나리오 B) · 0명과 1~3명 공통');
 const scenarioB = recommend(ds, cond({ budget: 400000, categories: ['뷰티'], range: [MICRO, MICRO] }));
 test('예산 40만·뷰티·마이크로 → 0명, 원인 = 예산', () => {
   eq(scenarioB.status, 'empty');
   eq(scenarioB.cause, 'budget');
 });
-test('완화 1: "예산을 54만 원으로 올리면 1명"', () => {
-  const r = scenarioB.relaxations.find((x) => x.kind === 'budget');
-  eq([r.budget, r.count], [540000, 1]);
+test('제안: "예산을 54만 원으로 올리면 1명 더", "나노까지 넓히면 2명 더" / 매크로는 안내 줄 "224만 원부터"', () => {
+  eq(scenarioB.wider.suggestions.map((x) => [x.kind, x.budget ?? x.tier, x.added]), [['budget', 540000, 1], ['range', NANO, 2]]);
+  eq(scenarioB.wider.infos, [{ tier: MACRO, minPrice: 2240000 }]);
 });
-test('완화 3: 나노까지 넓히면 2명 (마이크로만 선택 → 두 방향 계산)', () => {
-  const r = scenarioB.relaxations.filter((x) => x.kind === 'range');
-  eq(r.map((x) => [x.tier, x.count]), [[NANO, 2]]);
+test('카테고리 해제는 0명일 때도 제안하지 않음 (예산 100만·교육·나노·유튜브 → 플랫폼 +4, 마이크로 +1)', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['교육'], range: [NANO, NANO], platform: '유튜브' }));
+  eq(r.wider.suggestions.map((x) => [x.kind, x.added]), [['platform', 4], ['range', 1]]);
 });
-test('매크로 쪽은 버튼 없이 "매크로는 예산 224만 원부터" 안내, 완화안 개수에 세지 않음', () => {
-  // 뷰티 매크로 신규 1명을 매크로 최저 단가(224만 원)로 판정하므로 301만 원이 아니라 224만 원
-  eq(scenarioB.rangeInfos, [{ tier: MACRO, minPrice: 2240000 }]);
-  assert(!scenarioB.relaxations.some((x) => x.kind === 'range' && x.tier === MACRO));
+test('결과 1~3명도 같은 규칙: 54만·뷰티·마이크로(1명) → 예산 70만 +1, 나노 +3, 매크로 안내 줄', () => {
+  const r = recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }));
+  eq(r.items.length, 1);
+  eq(r.wider.suggestions.map((x) => [x.kind, x.budget ?? x.tier, x.added]), [['budget', 700000, 1], ['range', NANO, 3]]);
+  eq(r.wider.infos, [{ tier: MACRO, minPrice: 2240000 }]);
 });
-test('플랫폼 미선택이라 완화 2 없음, 카테고리 해제는 0명이라 완화 4 없음', () => {
-  eq(scenarioB.relaxations.map((x) => x.kind), ['budget', 'range']);
+test('80만·뷰티·마이크로·유튜브(1명) → 예산 +1, 플랫폼 +3, 나노 +1', () => {
+  const r = recommend(ds, cond({ budget: 800000, categories: ['뷰티'], range: [MICRO, MICRO], platform: '유튜브' }));
+  eq(r.wider.suggestions.map((x) => [x.kind, x.added]), [['budget', 1], ['platform', 3], ['range', 1]]);
 });
-test('대안: 예산만 초과하는 후보 3명, 예산에 가까운 순 (54만·70만·71만 원)', () => {
-  eq(scenarioB.alternatives.map((x) => x.creator.price), [540000, 700000, 710000]);
+test('결과가 4명 이상이면 제안 없음', () => {
+  eq(recommend(ds, cond({ budget: 1500000, categories: ['뷰티'], range: [MICRO, MICRO] })).wider, null);
 });
-test('완화안이 있으면 유사 크리에이터는 보여주지 않음', () => eq(scenarioB.similar, null));
-test('완화안을 적용하면 안내한 인원만큼 결과가 나옴', () => {
-  for (const r of scenarioB.relaxations) {
-    const applied = recommend(ds, { ...scenarioB.cond, ...r.apply });
-    eq(applied.status, 'ok', r.kind);
-    eq(applied.items.length, r.count, r.kind);
+test('제안을 적용하면 안내한 인원만큼 늘어남 (0명·1명 모두)', () => {
+  for (const base of [scenarioB, recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }))]) {
+    const before = base.status === 'ok' ? base.items.length : 0;
+    for (const m of base.wider.suggestions) eq(recommend(ds, { ...base.cond, ...m.apply }).items.length, before + m.added, m.kind);
   }
 });
 
 // ---------------------------------------------------------------
-section('8. 유사 크리에이터 (PRD 3.8, 시나리오 C)');
+section('8. 가까운 후보 (PRD 3.8, 시나리오 B·C)');
+test('시나리오 B: 예산만 초과하는 후보가 먼저, 예산에 가까운 순 (소라TV177 54만 · 민준브이로그180 70만 · 지수뷰티151 71만)', () => {
+  eq(scenarioB.nearby.map((x) => [x.creator.name, x.creator.price]), [['소라TV177', 540000], ['민준브이로그180', 700000], ['지수뷰티151', 710000]]);
+  assert(scenarioB.nearby.every((x) => x.changes === 1 && !x.platformDiff && !x.tierDiff));
+});
 const scenarioC = recommend(ds, cond({ budget: 200000, categories: ['교육'], range: [NANO, NANO], platform: '유튜브' }));
-test('예산 20만·교육·나노·유튜브 → 0명, 버튼이 있는 완화안 0개', () => {
-  eq(scenarioC.status, 'empty');
-  eq(scenarioC.relaxations.length, 0);
+test('시나리오 C: 버튼 제안 없음, "마이크로는 66만 원부터" 안내 줄', () => {
+  eq(scenarioC.wider.suggestions, []);
+  eq(scenarioC.wider.infos, [{ tier: MICRO, minPrice: 660000 }]);
 });
-test('마이크로 쪽 안내: "마이크로는 예산 66만 원부터 가능합니다"', () => {
-  eq(scenarioC.rangeInfos, [{ tier: MICRO, minPrice: 660000 }]);
+test('시나리오 C 가까운 후보: 교육·나노·인스타그램 3명, 예산에 가까운 순 (다은TV9 · 하은그램111 · 신동TV92)', () => {
+  eq(scenarioC.nearby.map((x) => x.creator.name), ['다은TV9', '하은그램111', '신동TV92']);
+  assert(scenarioC.nearby.every((x) => x.creator.category === '교육' && x.platformDiff && !x.tierDiff && x.over > 0));
 });
-test('유사 크리에이터 3명: 교육·나노·인스타그램(플랫폼만 다름), 모두 예산 초과', () => {
-  const s = scenarioC.similar;
-  eq(s.overBudget, true);
-  eq(s.items.length, 3);
-  assert(s.items.every((x) => x.creator.category === '교육' && x.creator.tier === NANO && x.creator.platform === '인스타그램'));
-  assert(s.items.every((x) => x.platformDiff && !x.tierDiff && x.over > 0));
-  for (let i = 1; i < s.items.length; i++) assert(s.items[i - 1].score >= s.items[i].score, '같은 그룹은 추천순');
+test('덜 바뀐 순서: 바뀐 조건 수 → 예산 > 플랫폼 > 규모 순', () => {
+  const all = findNearby(C, cond({ budget: 200000, categories: ['교육'], range: [NANO, NANO], platform: '유튜브' }), 99);
+  for (let i = 1; i < all.length; i++) {
+    const [a, b] = [all[i - 1], all[i]];
+    assert(a.changes < b.changes || (a.changes === b.changes && a.kindRank <= b.kindRank), `${a.creator.name} → ${b.creator.name}`);
+  }
 });
-test('덜 바뀐 순서: 플랫폼만 다름(0) → 규모만 다름(1) → 둘 다 다름(2)', () => {
-  const s = findSimilar(C, cond({ budget: 200000, categories: ['교육'], range: [NANO, NANO], platform: '유튜브' }), 99);
-  assert(new Set(s.items.map((x) => x.group)).size === 3, '세 그룹이 모두 있어야 함');
-  for (let i = 1; i < s.items.length; i++) assert(s.items[i - 1].group <= s.items[i].group);
-});
-test('카테고리를 고르지 않으면 카테고리 조건 없이 규모·플랫폼 규칙만 적용', () => {
-  // 매크로 + 인스타그램 + 아주 낮은 예산이면서 카테고리 미선택: 완화 1이 성립하므로 유사 대신 완화안
-  const r = recommend(ds, cond({ budget: 10000, range: [MACRO, MACRO], platform: '인스타그램' }));
-  eq(r.status, 'empty');
-  assert(r.relaxations.length > 0);
-});
-test('완료 기준: 어떤 조건에서도 0명이면 완화안·대안·유사 크리에이터 중 1개 이상 제시', () => {
+test('완료 기준: 어떤 조건에서도 0명이면 제안 버튼이나 가까운 후보가 1개 이상', () => {
   const budgets = [10000, 100000, 200000, 300000, 500000, 800000, 1200000, 2000000, 3000000];
   const ranges = [[0, 0], [1, 1], [2, 2], [0, 1], [1, 2], [0, 2]];
   const platforms = ['전체', '유튜브', '인스타그램'];
@@ -392,17 +411,11 @@ test('완료 기준: 어떤 조건에서도 0명이면 완화안·대안·유사
           const r = recommend(ds, cond({ budget, range, platform, categories }));
           if (r.status !== 'empty') continue;
           empties++;
-          const offered = r.relaxations.length + r.alternatives.length + (r.similar ? r.similar.items.length : 0);
-          assert(offered > 0, JSON.stringify({ budget, range, platform, categories }));
-          if (r.similar) {
-            // 유사 크리에이터는 카테고리를 유지하고, 원래 규모·플랫폼 조건에 그대로 맞는 사람은 없음
-            for (const x of r.similar.items) {
-              if (categories.length) assert(categories.includes(x.creator.category), '카테고리 유지');
-              const sameTier = x.creator.tier >= range[0] && x.creator.tier <= range[1];
-              const samePlatform = platform === '전체' || x.creator.platform === platform;
-              assert(!(sameTier && samePlatform), '원래 조건과 동일');
-              assert(x.creator.tier >= range[0] - 1 && x.creator.tier <= range[1] + 1, '규모는 한 단계까지');
-            }
+          assert(r.wider.suggestions.length + r.nearby.length > 0, JSON.stringify({ budget, range, platform, categories }));
+          assert(r.wider.suggestions.every((x) => x.kind !== 'category'), '카테고리 해제 없음');
+          for (const x of r.nearby) {
+            if (categories.length) assert(categories.includes(x.creator.category), '카테고리 유지');
+            assert(x.creator.tier >= range[0] - 1 && x.creator.tier <= range[1] + 1, '규모는 한 단계까지');
           }
         }
   assert(empties > 100, `0명 케이스가 충분히 검사되지 않음 (${empties})`);
@@ -427,30 +440,6 @@ test('금액은 반올림 없이 정확하게 표기', () => {
 });
 
 // ---------------------------------------------------------------
-section('10. 결과가 1~3명일 때 "N명 더" 제안 (PRD 3.7.1)');
-test('예산 54만·뷰티·마이크로(1명) → "예산 70만 원이면 1명 더", "나노까지 넓히면 3명 더"', () => {
-  const r = recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }));
-  eq(r.items.length, 1);
-  eq(r.more.map((x) => [x.kind, x.budget ?? x.tier ?? null, x.added]), [['budget', 700000, 1], ['range', NANO, 3]]);
-});
-test('예산 80만·뷰티·마이크로·유튜브(1명) → 예산 +1명, 플랫폼 전체 +3명, 규모 확장 +1명 / 카테고리 해제는 없음', () => {
-  const r = recommend(ds, cond({ budget: 800000, categories: ['뷰티'], range: [MICRO, MICRO], platform: '유튜브' }));
-  eq(r.items.length, 1);
-  eq(r.more.map((x) => [x.kind, x.added]), [['budget', 1], ['platform', 3], ['range', 1]]);
-  assert(r.more.every((x) => x.kind !== 'category'));
-});
-test('플랫폼을 고르지 않았으면 플랫폼 제안 없음', () => {
-  assert(recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] })).more.every((x) => x.kind !== 'platform'));
-});
-test('결과가 4명 이상이면 제안 없음', () => {
-  eq(recommend(ds, cond({ budget: 1500000, categories: ['뷰티'], range: [MICRO, MICRO] })).more, []);
-});
-test('제안을 적용하면 안내한 인원만큼 늘어남', () => {
-  const base = recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] }));
-  for (const m of base.more) eq(recommend(ds, { ...base.cond, ...m.apply }).items.length, base.items.length + m.added, m.kind);
-});
-
-// ---------------------------------------------------------------
 section('11. 태그 필터 (F7, OR)');
 const tf = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
 test('태그 칩 인원 = 그 태그가 카드에 표시된 크리에이터 수', () => {
@@ -467,7 +456,7 @@ test('여러 태그를 고르면 하나라도 있는 크리에이터 (OR)', () =
 test('필터 없음 = 전체, 필터 후에도 추천 순위 숫자 유지', () => {
   eq(filterByTags(tf.items, new Set()).length, 21);
   const f = filterByTags(tf.items, new Set(['신규(평점 없음)']));
-  eq(f.map((x) => x.rank), [8, 13, 15, 21]);
+  eq(f.map((x) => x.rank), [12, 14, 17, 21]);
 });
 
 // ---------------------------------------------------------------
@@ -482,6 +471,133 @@ test('기본값은 주소에 넣지 않음, 잘못된 값은 기본값으로', (
   const f = queryToForm('?budget=5&cat=없는카테고리&range=2-0&platform=틱톡&purpose=x', S.categories);
   eq([f.categories, f.range, f.platform, f.purpose], [[], [0, 2], '전체', 'balanced']);
   eq(queryToForm('', S.categories), null, '조건 없는 주소');
+});
+
+// ---------------------------------------------------------------
+section('13. 예산적합도 (PRD 3.4, 종합 추천)');
+test('식품·100만·전체: 기준 금액 82만, 1~5위 다은TV16 / 수아채널107 / 은서푸드로그91 / 소민다이어리22 / 철수클립117 (은서푸드로그91 1위 → 3위)', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'] }));
+  eq([r.fit.base, r.fit.fullFrom], [820000, 0.7]);
+  eq(r.items.slice(0, 5).map((x) => x.creator.name), ['다은TV16', '수아채널107', '은서푸드로그91', '소민다이어리22', '철수클립117']);
+});
+test('나노만·50만: 기준 금액 = 나노 후보 최고 단가 50만, 전원 감점이 아님 (만점 21명, 최저 0.5)', () => {
+  const r = recommend(ds, cond({ budget: 500000, range: [NANO, NANO] }));
+  const vals = [...r.fit.values.values()];
+  eq([r.fit.base, vals.filter((v) => v === 1).length, Math.min(...vals).toFixed(2)], [500000, 21, '0.50']);
+});
+test('나노~마이크로·100만: 기준 금액 98만, 만점 14명', () => {
+  const r = recommend(ds, cond({ budget: 1000000, range: [NANO, MICRO] }));
+  eq([r.fit.base, r.fit.fullFrom, [...r.fit.values.values()].filter((v) => v === 1).length], [980000, 0.7, 14]);
+});
+test('u ≥ 0.7인 이력 후보가 3명 미만이면 L = 0.5 (뷰티·마이크로·인스타그램·200만: 기준 180만, 0.7 이상 2명)', () => {
+  const r = recommend(ds, cond({ budget: 2000000, categories: ['뷰티'], range: [MICRO, MICRO], platform: '인스타그램' }));
+  eq([r.fit.base, r.fit.fullFrom], [1800000, 0.5]);
+});
+test('정규화 구간: u ≥ L → 1, 0.4 ≤ u < L → 0.6~1, u < 0.4 → 0.2~0.6', () => {
+  const mk = (id, price) => ({ id, price, isNegotiable: false });
+  const fit = budgetFitContext([mk('a', 100), mk('b', 80), mk('c', 70), mk('d', 55), mk('e', 20)]);
+  eq(fit.fullFrom, 0.7);
+  eq(['a', 'b', 'c', 'd', 'e'].map((id) => fit.values.get(id).toFixed(2)), ['1.00', '1.00', '1.00', '0.80', '0.40']);
+});
+test('신규는 0.5이고 기준 금액·인원 판정에서 제외', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'] }));
+  const fresh = r.items.filter((x) => x.creator.isNegotiable);
+  assert(fresh.length > 0 && fresh.every((x) => r.fit.values.get(x.creator.id) === 0.5));
+  eq(r.fit.base, Math.max(...r.items.filter((x) => !x.creator.isNegotiable).map((x) => x.creator.price)));
+});
+test('신규만 통과하는 조건: 오류 없이 전원 0.5 (뷰티·나노·인스타그램·21만 → 유나매거진115)', () => {
+  const r = recommend(ds, cond({ budget: 210000, categories: ['뷰티'], range: [NANO, NANO], platform: '인스타그램' }));
+  eq(r.items.map((x) => x.creator.name), ['유나매거진115']);
+  eq([r.fit.base, [...r.fit.values.values()]], [null, [0.5]]);
+});
+test('매칭 점수 = 새 가중치 × 정규화 값 합계 (예산적합도 포함)', () => {
+  const r = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
+  for (const x of r.items) {
+    const sum = Object.entries(PURPOSES.balanced.weights).reduce((a, [m, w]) => a + w * normOf(x.creator, m, r.fit), 0);
+    near(x.score, sum, 1e-9, x.creator.name);
+  }
+});
+test('기여도: 예산적합도는 현재 후보 평균과 비교, 문장 표기는 "예산 활용도"', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'] }));
+  const x = r.items.find((i) => i.creator.name === '다은TV16');
+  const list = contributions(x.creator, 'balanced', S.normMeans, r.fit);
+  const budget = list.find((c) => c.metric === 'budget');
+  assert(budget, '다은TV16의 기여 지표에 예산적합도');
+  near(budget.value, 20 * (1 - r.fit.mean), 1e-9);
+});
+
+// ---------------------------------------------------------------
+section('14. 신규 추천 단가 (PRD 3.2)');
+test('같은 플랫폼·규모에서 가장 비슷한 2명 평균 (만 원 반올림): 현우일상162 90만 / 민석TV55 58만 / 하은TALK81 148만', () => {
+  const get = (n) => C.find((c) => c.name === n);
+  eq(['현우일상162', '민석TV55', '하은TALK81'].map((n) => get(n).recPrice), [900000, 580000, 1480000]);
+  eq(get('현우일상162').recRefs.map((r) => r.name), ['수진스페이스173', '현우브이로그62']);
+});
+test('신규 27명 모두 추천 단가와 근거 2명이 있고, 근거는 같은 플랫폼·규모의 이력 있는 크리에이터', () => {
+  for (const c of C.filter((x) => !x.hasHistory)) {
+    assert(c.recPrice > 0 && c.recPrice % 10000 === 0, c.name);
+    eq(c.recRefs.length, 2, c.name);
+    for (const r of c.recRefs) {
+      const ref = C.find((x) => x.id === r.id);
+      assert(ref.hasHistory && ref.platform === c.platform && ref.tier === c.tier, `${c.name} ← ${ref.name}`);
+    }
+  }
+});
+test('예산 판정은 그대로 같은 규모 최저 단가 (추천 단가 148만인 하은TALK81도 100만 원에서 통과)', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'], platform: '유튜브' }));
+  assert(r.items.some((x) => x.creator.name === '하은TALK81'));
+});
+
+// ---------------------------------------------------------------
+section('15. 화면 문구 (PRD v1.0)');
+const text = (html) => html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ');
+test('카드 상세: 매칭 점수, 예산적합도 행 "1인당 예산의 N% 사용", 목록 순위 "1위"', () => {
+  const r = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
+  const html = text(renderResultList(r, 'recommended', S));
+  assert(html.includes('매칭 점수 (종합 추천 기준) 80.8 / 100점'), '점수');
+  assert(html.includes('예산적합도') && html.includes('1인당 예산의 56% 사용'), '예산적합도 행');
+  assert(html.includes('1위'), '순위 배지');
+});
+test('신규 카드: "추천 단가 약 90만 원", 근거 2명, 평점 "신규(0건)", 경험 "0건 (신규)"', () => {
+  const r = recommend(ds, cond({ budget: 3000000, categories: ['식품'], range: [MICRO, MICRO] }));
+  const html = text(renderResultList(r, 'recommended', S));
+  assert(html.includes('추천 단가 약 90만 원'), '추천 단가');
+  assert(html.includes('비슷한 크리에이터 수진스페이스173(60만 원), 현우브이로그62(120만 원)의 평균이에요'), '근거');
+  assert(html.includes('신규(0건)') && html.includes('0건 (신규)'), '신규 표현');
+});
+test('추천 단가가 예산보다 크면 "추천 단가가 예산을 넘을 수 있어요"', () => {
+  const r = recommend(ds, cond({ budget: 1000000, categories: ['식품'], platform: '유튜브' }));
+  assert(text(renderResultList(r, 'recommended', S)).includes('추천 단가가 예산을 넘을 수 있어요'));
+});
+test('규모 확장 문구: 모든 방향에 단가 범위 괄호 (나노 21만~50만 / 마이크로 51만~200만)', () => {
+  const b = text(renderEmpty(scenarioB, S));
+  assert(b.includes('단가가 낮은 크리에이터를 원한다면 → 나노까지 넓히면 2명 더 (단가 21만~50만 원대)'), b);
+  const m = text(renderEmpty(recommend(ds, cond({ budget: 2000000, categories: ['피트니스'], range: [MACRO, MACRO] })), S));
+  assert(m.includes('비용을 줄이면서 반응을 원한다면 → 마이크로까지 넓히면 10명 더 (단가 51만~200만 원대)'), m);
+  const n = text(renderEmpty(recommend(ds, cond({ budget: 1000000, categories: ['교육'], range: [NANO, NANO], platform: '유튜브' })), S));
+  assert(n.includes('더 많은 사람에게 보여주고 싶다면 → 마이크로까지 넓히면 1명 더 (단가 51만~200만 원대)'), n);
+});
+test('0명과 1~3명이 같은 영역: 상태 문구 + "조건을 하나만 바꾸면 더 볼 수 있어요" + 안내 줄', () => {
+  const zero = text(renderEmpty(scenarioB, S));
+  assert(zero.includes('이 예산으로 집행할 수 있는 크리에이터가 없어요') && zero.includes('조건을 하나만 바꾸면 더 볼 수 있어요'), zero);
+  assert(zero.includes('매크로는 예산 224만 원부터 가능해요'));
+  const few = text(renderSummary(recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] })), 'recommended', new Set(), S));
+  assert(few.includes('조건에 맞는 크리에이터가 1명이에요') && few.includes('조건을 하나만 바꾸면 더 볼 수 있어요'), few);
+  assert(few.includes('예산을 70만 원으로 올리면 1명 더') && few.includes('매크로는 예산 224만 원부터 가능해요'));
+});
+test('가까운 후보 제목 "이런 크리에이터는 어떠세요?" 하나로 통일, 카테고리 "전체" 안내는 해요체', () => {
+  assert(text(renderEmpty(scenarioB, S)).includes('이런 크리에이터는 어떠세요?'));
+  assert(text(renderEmpty(scenarioC, S)).includes('이런 크리에이터는 어떠세요?'));
+  assert(text(renderSummary(recommend(ds, cond({ budget: 3000000 })), 'recommended', new Set(), S)).includes('지금은 모든 카테고리에서 추천하고 있어요'));
+});
+test('화면 문구에 합니다체가 남아 있지 않음', () => {
+  const htmls = [
+    renderEmpty(scenarioB, S),
+    renderEmpty(scenarioC, S),
+    renderSummary(recommend(ds, cond({ budget: 540000, categories: ['뷰티'], range: [MICRO, MICRO] })), 'recommended', new Set(), S),
+    renderResultList(recommend(ds, cond({ budget: 1000000, categories: ['식품'] })), 'recommended', S),
+  ].map(text).join(' ');
+  assert(!/(습니다|합니다|됩니다|입니다)/.test(htmls), htmls.match(/.{20}(습니다|합니다|됩니다|입니다)/)?.[0]);
 });
 
 // ---------------------------------------------------------------
