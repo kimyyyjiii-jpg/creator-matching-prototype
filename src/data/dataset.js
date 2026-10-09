@@ -82,7 +82,7 @@ export function buildDataset(rows) {
 
   for (const c of base) {
     // 신규(이력 없음)는 단가를 알 수 없다(협의 필요). 화면에는 같은 규모의 단가 범위를 보여주고,
-    // 예산 판정·완화안·대안 계산에는 그 범위의 최저 단가를 쓴다 (PRD 3.2, 3.3)
+    // 예산 판정·조건 넓히기·가까운 후보 계산에는 그 범위의 최저 단가를 쓴다 (PRD 3.2, 3.3)
     c.isNegotiable = !c.hasHistory;
     c.priceRange = c.isNegotiable && c.tier != null ? priceRange[c.tier] : null;
     c.price = c.hasHistory ? c.rawPrice : c.priceRange ? c.priceRange.min : null;

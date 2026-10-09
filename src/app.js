@@ -266,13 +266,13 @@ function onResultsClick(e) {
   const widenBtn = e.target.closest('[data-widen]');
   const relax = widenBtn ? state.result.wider?.suggestions[Number(widenBtn.dataset.widen)] : null;
   if (!relax) return;
-  // 완화안은 해당 조건을 폼에 반영한 뒤 다시 추천한다 (나머지 조건은 그대로)
+  // 조건 넓히기 제안은 해당 조건을 폼에 반영한 뒤 다시 추천한다 (나머지 조건은 그대로)
   const a = relax.apply;
   if ('budget' in a) state.form.budgetText = String(a.budget);
   if ('platform' in a) state.form.platform = a.platform;
   if ('range' in a) state.form.range = [...a.range];
   if ('categories' in a) state.form.categories = [...a.categories];
-  // 폼에 남아 있는 다른 미적용 변경이 섞이지 않도록, 완화 대상 외 조건은 마지막 실행값으로 맞춘다
+  // 폼에 남아 있는 다른 미적용 변경이 섞이지 않도록, 넓힐 대상 외 조건은 마지막 실행값으로 맞춘다
   const applied = state.result.cond;
   if (!('budget' in a)) state.form.budgetText = String(applied.budget);
   if (!('platform' in a)) state.form.platform = applied.platform;

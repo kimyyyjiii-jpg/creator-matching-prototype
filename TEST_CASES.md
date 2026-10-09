@@ -7,8 +7,10 @@ PRD.md v1.0 기준. 기대값은 현재 구현을 실제 데이터로 실행해 
 
 ## 준비
 
+프로젝트 루트(이 저장소를 받은 폴더)에서 실행합니다.
+
 ```bash
-cd ~/Desktop/creator-matching-prototype && python3 -m http.server 8000
+python3 -m http.server 8000
 ```
 
 - 앱: http://localhost:8000/
