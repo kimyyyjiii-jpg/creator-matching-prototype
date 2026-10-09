@@ -3,6 +3,10 @@
 1인당 예산·카테고리·팔로워 규모를 입력하면, 예산 안에서 집행 가능한 크리에이터를 캠페인 목적에 맞춰 추천합니다.
 기획은 [PRD.md](PRD.md), 로직 흐름은 [flowchart.md](flowchart.md)를 기준으로 구현했습니다.
 
+**바로 보기**
+- 데모 화면: https://kimyyyjiii-jpg.github.io/creator-matching-prototype/
+- 로직 테스트: https://kimyyyjiii-jpg.github.io/creator-matching-prototype/tests/
+
 ## 실행
 
 빌드나 패키지 설치가 필요 없습니다. 브라우저가 CSV를 `fetch`로 읽기 때문에 로컬 서버로 열어야 합니다. 프로젝트 루트에서 실행합니다.
